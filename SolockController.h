@@ -84,6 +84,18 @@ private:
         std::wstring appPath;
     };
 
+    struct ExternalOverrides
+    {
+        std::wstring eveningHotspotName;
+        bool hasCustomBlockStart = false;
+        int customBlockStartMinutesOfDay = 0;
+        bool hasCustomBlockDurationMinutes = false;
+        int customBlockDurationMinutes = 0;
+        bool hasCustomBlockRepeatCount = false;
+        int customBlockRepeatCount = 0;
+        std::wstring signature;
+    };
+
     enum class Phase
     {
         ScheduledBlocks,
@@ -95,6 +107,9 @@ private:
     bool m_eveningIdleLockApplied;
     std::wstring m_eveningHotspotAliasSource;
     std::wstring m_eveningHotspotAlias;
+    bool m_customBlockActivated;
+    std::chrono::system_clock::time_point m_customBlockActivationTime;
+    std::wstring m_customBlockConfigSignature;
     HANDLE m_wfpEngine;
     bool m_blockedAppFiltersInstalled;
     std::vector<InstalledBlockedAppFilter> m_installedBlockedAppFilters;
@@ -136,7 +151,10 @@ private:
     bool EnsureTargetAppsNetworkingEnabled();
     std::vector<RunningBlockedProcess> ResolveRunningBlockedProcesses() const;
     bool EnsureTargetAppsNetworkingMatchesSchedule(const std::chrono::system_clock::time_point& now);
-    bool ShouldBlockTargetAppsAt(const std::chrono::system_clock::time_point& now) const;
+    bool ShouldBlockTargetAppsAt(const std::chrono::system_clock::time_point& now);
+    bool IsCustomBlockActiveAt(
+        const std::chrono::system_clock::time_point& now,
+        const ExternalOverrides& overrides);
     void CloseWfpEngine();
     bool EnsureEveningHotspotState();
     bool EnsureEveningPostActionState();
@@ -152,10 +170,12 @@ private:
 
     static std::wstring GetStateDirectoryPath();
     static std::wstring GetOriginalSsidStateFilePath();
+    static std::wstring GetHotspotAndBlockConfigFilePath();
     static bool EnsureStateDirectoryExists();
     static bool ClearOriginalSsid();
     static bool SaveOriginalSsid(const std::wstring& ssid);
     static bool TryLoadOriginalSsid(std::wstring& ssid);
+    static ExternalOverrides LoadExternalOverrides();
 
     static std::wstring GetCurrentExePath();
     static std::wstring GetCurrentExeDirectory();

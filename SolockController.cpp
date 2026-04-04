@@ -47,6 +47,7 @@ namespace
     constexpr int kMaxMinuteOfDay = 23 * 60 + 59;
     constexpr wchar_t kWfpSessionName[] = L"Solock Dynamic WFP Session";
     constexpr wchar_t kWfpSublayerName[] = L"Solock App Block Sublayer";
+    constexpr wchar_t kHotspotAndBlockConfigFileName[] = L"hotspot_and_block.ini";
     constexpr wchar_t kSeewoPrefix[] = L"seewo-";
     constexpr GUID kSolockWfpSublayerKey =
     { 0x618ab011, 0xcb31, 0x4b31, { 0x92, 0xfd, 0x86, 0x40, 0xe0, 0x25, 0x84, 0xfa } };
@@ -152,6 +153,90 @@ namespace
     std::wstring ToWString(const std::string& value)
     {
         return std::wstring(value.begin(), value.end());
+    }
+
+    std::wstring TrimWhitespace(const std::wstring& value)
+    {
+        size_t start = 0;
+        while (start < value.size() && std::iswspace(static_cast<wint_t>(value[start])))
+        {
+            ++start;
+        }
+
+        size_t end = value.size();
+        while (end > start && std::iswspace(static_cast<wint_t>(value[end - 1])))
+        {
+            --end;
+        }
+
+        return value.substr(start, end - start);
+    }
+
+    std::wstring ReadIniValue(
+        const std::wstring& filePath,
+        const wchar_t* section,
+        const wchar_t* key)
+    {
+        if (filePath.empty() || section == nullptr || key == nullptr)
+        {
+            return L"";
+        }
+
+        wchar_t buffer[1024] = {};
+        const DWORD len = ::GetPrivateProfileStringW(
+            section,
+            key,
+            L"",
+            buffer,
+            static_cast<DWORD>(_countof(buffer)),
+            filePath.c_str());
+        return TrimWhitespace(std::wstring(buffer, len));
+    }
+
+    bool TryParseStrictInt(const std::wstring& value, int& parsedValue)
+    {
+        const std::wstring trimmed = TrimWhitespace(value);
+        if (trimmed.empty())
+        {
+            return false;
+        }
+
+        std::wistringstream input(trimmed);
+        int result = 0;
+        wchar_t trailing = L'\0';
+        if (!(input >> result) || (input >> trailing))
+        {
+            return false;
+        }
+
+        parsedValue = result;
+        return true;
+    }
+
+    bool TryParseMinuteOfDay(const std::wstring& value, int& minuteOfDay)
+    {
+        const std::wstring trimmed = TrimWhitespace(value);
+        const size_t separator = trimmed.find(L':');
+        if (separator == std::wstring::npos || trimmed.find(L':', separator + 1) != std::wstring::npos)
+        {
+            return false;
+        }
+
+        int hour = 0;
+        int minute = 0;
+        if (!TryParseStrictInt(trimmed.substr(0, separator), hour) ||
+            !TryParseStrictInt(trimmed.substr(separator + 1), minute))
+        {
+            return false;
+        }
+
+        if (hour < 0 || hour > 23 || minute < 0 || minute > 59)
+        {
+            return false;
+        }
+
+        minuteOfDay = hour * 60 + minute;
+        return true;
     }
 
     bool IsTetheringOn(const NetworkOperatorTetheringManager& manager)
@@ -541,6 +626,9 @@ SolockController::SolockController(const Options& options)
       m_eveningIdleLockApplied(false),
       m_eveningHotspotAliasSource(),
       m_eveningHotspotAlias(),
+      m_customBlockActivated(false),
+      m_customBlockActivationTime(),
+      m_customBlockConfigSignature(),
       m_wfpEngine(nullptr),
       m_blockedAppFiltersInstalled(false),
       m_audioDeviceChangeEvent(nullptr),
@@ -1504,8 +1592,14 @@ bool SolockController::EnsureTargetAppsNetworkingMatchesSchedule(
     return EnsureTargetAppsNetworkingEnabled();
 }
 
-bool SolockController::ShouldBlockTargetAppsAt(const std::chrono::system_clock::time_point& now) const
+bool SolockController::ShouldBlockTargetAppsAt(const std::chrono::system_clock::time_point& now)
 {
+    const ExternalOverrides overrides = LoadExternalOverrides();
+    if (IsCustomBlockActiveAt(now, overrides))
+    {
+        return true;
+    }
+
     const int durationMinutes = std::max(1, m_options.scheduledBlockDurationMinutes);
     for (const int startMinuteOfDay : m_options.scheduledBlockStartMinutesOfDay)
     {
@@ -1519,6 +1613,51 @@ bool SolockController::ShouldBlockTargetAppsAt(const std::chrono::system_clock::
     }
 
     return false;
+}
+
+bool SolockController::IsCustomBlockActiveAt(
+    const std::chrono::system_clock::time_point& now,
+    const ExternalOverrides& overrides)
+{
+    if (overrides.signature != m_customBlockConfigSignature)
+    {
+        m_customBlockConfigSignature = overrides.signature;
+        m_customBlockActivated = false;
+        m_customBlockActivationTime = std::chrono::system_clock::time_point();
+    }
+
+    if (!overrides.hasCustomBlockStart)
+    {
+        return false;
+    }
+
+    if (!m_customBlockActivated)
+    {
+        const auto customBlockStart = LocalAtOnSameDay(
+            now,
+            overrides.customBlockStartMinutesOfDay / 60,
+            overrides.customBlockStartMinutesOfDay % 60,
+            0);
+        if (now < customBlockStart)
+        {
+            return false;
+        }
+
+        m_customBlockActivated = true;
+        m_customBlockActivationTime = customBlockStart;
+    }
+
+    if (!overrides.hasCustomBlockDurationMinutes)
+    {
+        return true;
+    }
+
+    const int repeatCount = overrides.hasCustomBlockRepeatCount
+        ? std::max(1, overrides.customBlockRepeatCount)
+        : 1;
+    const auto totalDuration = std::chrono::minutes(
+        static_cast<std::chrono::minutes::rep>(overrides.customBlockDurationMinutes) * repeatCount);
+    return now < m_customBlockActivationTime + totalDuration;
 }
 
 void SolockController::CloseWfpEngine()
@@ -1546,6 +1685,7 @@ bool SolockController::EnsureEveningHotspotState()
     std::wstring desiredSsid;
     try
     {
+        const ExternalOverrides overrides = LoadExternalOverrides();
         auto manager = CreateTetheringManager();
         const auto currentConfig = manager.GetCurrentAccessPointConfiguration();
         const std::wstring currentSsid = ToWString(currentConfig.Ssid());
@@ -1558,15 +1698,23 @@ bool SolockController::EnsureEveningHotspotState()
             originalSsid = currentSsid;
         }
 
-        const std::wstring aliasSource =
-            !originalSsid.empty()
-                ? originalSsid
-                : (!currentSsid.empty() ? currentSsid : m_options.postActionSsid);
-        desiredSsid = GetEveningHotspotAlias(aliasSource);
+        if (!overrides.eveningHotspotName.empty())
+        {
+            desiredSsid = overrides.eveningHotspotName;
+            DebugLog(L"[HOTSPOT] using configured evening hotspot name from hotspot_and_block.ini: " + desiredSsid);
+        }
+        else
+        {
+            const std::wstring aliasSource =
+                !originalSsid.empty()
+                    ? originalSsid
+                    : (!currentSsid.empty() ? currentSsid : m_options.postActionSsid);
+            desiredSsid = GetEveningHotspotAlias(aliasSource);
 
-        DebugLog(L"[HOTSPOT] evening alias source SSID=" +
-            (aliasSource.empty() ? std::wstring(L"<empty>") : aliasSource) +
-            L", desired SSID=" + desiredSsid);
+            DebugLog(L"[HOTSPOT] evening alias source SSID=" +
+                (aliasSource.empty() ? std::wstring(L"<empty>") : aliasSource) +
+                L", desired SSID=" + desiredSsid);
+        }
     }
     catch (const std::exception& ex)
     {
@@ -1696,6 +1844,17 @@ std::wstring SolockController::GetOriginalSsidStateFilePath()
     return dir + L"\\original_hotspot_ssid.txt";
 }
 
+std::wstring SolockController::GetHotspotAndBlockConfigFilePath()
+{
+    const std::wstring dir = GetStateDirectoryPath();
+    if (dir.empty())
+    {
+        return L"";
+    }
+
+    return dir + L"\\" + kHotspotAndBlockConfigFileName;
+}
+
 bool SolockController::EnsureStateDirectoryExists()
 {
     const std::wstring dir = GetStateDirectoryPath();
@@ -1775,6 +1934,51 @@ bool SolockController::TryLoadOriginalSsid(std::wstring& ssid)
 
     std::getline(in, ssid);
     return !ssid.empty();
+}
+
+SolockController::ExternalOverrides SolockController::LoadExternalOverrides()
+{
+    ExternalOverrides overrides;
+    const std::wstring path = GetHotspotAndBlockConfigFilePath();
+    if (path.empty())
+    {
+        return overrides;
+    }
+
+    overrides.eveningHotspotName = ReadIniValue(path, L"hotspot", L"evening_name");
+
+    const std::wstring customBlockStart = ReadIniValue(path, L"custom_block", L"start");
+    const std::wstring customBlockDuration = ReadIniValue(path, L"custom_block", L"duration_minutes");
+    const std::wstring customBlockRepeatCount = ReadIniValue(path, L"custom_block", L"repeat_count");
+
+    int parsedStartMinutesOfDay = 0;
+    if (TryParseMinuteOfDay(customBlockStart, parsedStartMinutesOfDay))
+    {
+        overrides.hasCustomBlockStart = true;
+        overrides.customBlockStartMinutesOfDay = parsedStartMinutesOfDay;
+    }
+
+    int parsedDurationMinutes = 0;
+    if (TryParseStrictInt(customBlockDuration, parsedDurationMinutes) && parsedDurationMinutes > 0)
+    {
+        overrides.hasCustomBlockDurationMinutes = true;
+        overrides.customBlockDurationMinutes = parsedDurationMinutes;
+    }
+
+    int parsedRepeatCount = 0;
+    if (TryParseStrictInt(customBlockRepeatCount, parsedRepeatCount) && parsedRepeatCount > 0)
+    {
+        overrides.hasCustomBlockRepeatCount = true;
+        overrides.customBlockRepeatCount = parsedRepeatCount;
+    }
+
+    overrides.signature =
+        L"hotspot=" + overrides.eveningHotspotName +
+        L"|start=" + customBlockStart +
+        L"|duration=" + customBlockDuration +
+        L"|repeat=" + customBlockRepeatCount;
+
+    return overrides;
 }
 
 std::wstring SolockController::GetCurrentExePath()
