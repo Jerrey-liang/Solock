@@ -93,6 +93,8 @@ private:
 
     Options m_options;
     bool m_eveningIdleLockApplied;
+    std::wstring m_eveningHotspotAliasSource;
+    std::wstring m_eveningHotspotAlias;
     HANDLE m_wfpEngine;
     bool m_blockedAppFiltersInstalled;
     std::vector<InstalledBlockedAppFilter> m_installedBlockedAppFilters;
@@ -127,12 +129,16 @@ private:
     bool EnsurePreActionHotspot();
     bool EnsureHotspotOnWithCurrentConfig();
     bool EnsureHotspotOnWithSsid(const std::wstring& desiredSsid);
+    void ResetEveningHotspotAlias();
+    std::wstring GetEveningHotspotAlias(const std::wstring& sourceSsid);
+    static std::wstring BuildRandomizedHotspotAlias(const std::wstring& sourceSsid);
     bool EnsureTargetAppsNetworkingBlocked();
     bool EnsureTargetAppsNetworkingEnabled();
     std::vector<RunningBlockedProcess> ResolveRunningBlockedProcesses() const;
     bool EnsureTargetAppsNetworkingMatchesSchedule(const std::chrono::system_clock::time_point& now);
     bool ShouldBlockTargetAppsAt(const std::chrono::system_clock::time_point& now) const;
     void CloseWfpEngine();
+    bool EnsureEveningHotspotState();
     bool EnsureEveningPostActionState();
     bool ApplyEveningIdleLockIfNeeded();
     bool ShouldSkipHotspotActions() const;
@@ -147,6 +153,7 @@ private:
     static std::wstring GetStateDirectoryPath();
     static std::wstring GetOriginalSsidStateFilePath();
     static bool EnsureStateDirectoryExists();
+    static bool ClearOriginalSsid();
     static bool SaveOriginalSsid(const std::wstring& ssid);
     static bool TryLoadOriginalSsid(std::wstring& ssid);
 

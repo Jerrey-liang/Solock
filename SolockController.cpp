@@ -20,8 +20,11 @@
 #include <cmath>
 #include <cstdio>
 #include <ctime>
+#include <cwctype>
+#include <cwchar>
 #include <fstream>
 #include <iostream>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -44,6 +47,7 @@ namespace
     constexpr int kMaxMinuteOfDay = 23 * 60 + 59;
     constexpr wchar_t kWfpSessionName[] = L"Solock Dynamic WFP Session";
     constexpr wchar_t kWfpSublayerName[] = L"Solock App Block Sublayer";
+    constexpr wchar_t kSeewoPrefix[] = L"seewo-";
     constexpr GUID kSolockWfpSublayerKey =
     { 0x618ab011, 0xcb31, 0x4b31, { 0x92, 0xfd, 0x86, 0x40, 0xe0, 0x25, 0x84, 0xfa } };
 
@@ -233,6 +237,122 @@ namespace
         return true;
     }
 
+    bool StartsWithIgnoreCase(const std::wstring& value, const wchar_t* prefix)
+    {
+        if (prefix == nullptr)
+        {
+            return false;
+        }
+
+        const size_t prefixLength = std::wcslen(prefix);
+        return value.size() >= prefixLength &&
+            _wcsnicmp(value.c_str(), prefix, prefixLength) == 0;
+    }
+
+    std::mt19937& GetRandomGenerator()
+    {
+        static thread_local std::mt19937 generator(std::random_device{}());
+        return generator;
+    }
+
+    std::wstring ExtractRandomizableSsidCharacters(const std::wstring& sourceSsid)
+    {
+        std::wstring seed = sourceSsid;
+        if (StartsWithIgnoreCase(sourceSsid, kSeewoPrefix))
+        {
+            seed = sourceSsid.substr(std::wcslen(kSeewoPrefix));
+        }
+
+        std::wstring filtered;
+        filtered.reserve(seed.size());
+        for (const wchar_t ch : seed)
+        {
+            if (std::iswalnum(static_cast<wint_t>(ch)))
+            {
+                filtered.push_back(ch);
+            }
+        }
+
+        if (!filtered.empty())
+        {
+            return filtered;
+        }
+
+        filtered.reserve(sourceSsid.size());
+        for (const wchar_t ch : sourceSsid)
+        {
+            if (std::iswalnum(static_cast<wint_t>(ch)))
+            {
+                filtered.push_back(ch);
+            }
+        }
+
+        return filtered;
+    }
+
+    std::wstring PickRandomHotspotToken(const std::wstring& sourceSsid)
+    {
+        std::wstring characterPool = ExtractRandomizableSsidCharacters(sourceSsid);
+        if (characterPool.empty())
+        {
+            characterPool = L"wifi";
+        }
+
+        auto& generator = GetRandomGenerator();
+        std::vector<wchar_t> shuffledPool(characterPool.begin(), characterPool.end());
+        std::shuffle(shuffledPool.begin(), shuffledPool.end(), generator);
+
+        std::wstring token;
+        token.reserve(4);
+        const size_t directCount = std::min<size_t>(4, shuffledPool.size());
+        for (size_t i = 0; i < directCount; ++i)
+        {
+            token.push_back(shuffledPool[i]);
+        }
+
+        if (!shuffledPool.empty())
+        {
+            std::uniform_int_distribution<size_t> pickIndex(0, shuffledPool.size() - 1);
+            while (token.size() < 4)
+            {
+                token.push_back(shuffledPool[pickIndex(generator)]);
+            }
+        }
+
+        std::shuffle(token.begin(), token.end(), generator);
+        std::bernoulli_distribution uppercaseSwitch(0.5);
+        for (wchar_t& ch : token)
+        {
+            if (std::iswalpha(static_cast<wint_t>(ch)))
+            {
+                ch = uppercaseSwitch(generator)
+                    ? std::towupper(static_cast<wint_t>(ch))
+                    : std::towlower(static_cast<wint_t>(ch));
+            }
+        }
+
+        return token;
+    }
+
+    std::wstring BuildCarrierStyleHotspotAlias(const std::wstring& sourceSsid)
+    {
+        static const std::vector<std::wstring> prefixes =
+        {
+            L"CMCC-",
+            L"ChinaNet-",
+            L"ChinaUnicom-",
+            L"CUNET_",
+            L"TP-LINK_",
+            L"MERCURY_",
+            L"H3C_",
+            L"Tenda_"
+        };
+
+        auto& generator = GetRandomGenerator();
+        std::uniform_int_distribution<size_t> pickPrefix(0, prefixes.size() - 1);
+        return prefixes[pickPrefix(generator)] + PickRandomHotspotToken(sourceSsid);
+    }
+
 #ifdef _DEBUG
     std::wstring FormatStatusCode(const DWORD status)
     {
@@ -419,6 +539,8 @@ namespace
 SolockController::SolockController(const Options& options)
     : m_options(options),
       m_eveningIdleLockApplied(false),
+      m_eveningHotspotAliasSource(),
+      m_eveningHotspotAlias(),
       m_wfpEngine(nullptr),
       m_blockedAppFiltersInstalled(false),
       m_audioDeviceChangeEvent(nullptr),
@@ -453,44 +575,12 @@ int SolockController::RunAllFeaturesAcceleratedDebug()
         bool ok;
     };
 
-    struct DebugCheckpoint
-    {
-        const wchar_t* label;
-        int minuteOfDay;
-    };
-
     std::vector<DebugStepResult> stepResults;
     auto recordStep = [&](const std::wstring& name, const bool ok)
     {
         stepResults.push_back({ name, ok });
         DebugLog(std::wstring(L"[ACCEL] ") + name + L": " + (ok ? L"ok" : L"failed"));
         return ok;
-    };
-
-    auto phaseToString = [](const Phase phase) -> const wchar_t*
-    {
-        switch (phase)
-        {
-        case Phase::ScheduledBlocks:
-            return L"ScheduledBlocks";
-        case Phase::MiddayIdleShutdown:
-            return L"MiddayIdleShutdown";
-        case Phase::EveningPostAction:
-            return L"EveningPostAction";
-        }
-
-        return L"Unknown";
-    };
-
-    auto formatLocalTime = [](const std::chrono::system_clock::time_point& timePoint)
-    {
-        const std::time_t rawTime = std::chrono::system_clock::to_time_t(timePoint);
-        std::tm localTm = {};
-        localtime_s(&localTm, &rawTime);
-
-        wchar_t buffer[32] = {};
-        std::wcsftime(buffer, _countof(buffer), L"%Y-%m-%d %H:%M:%S", &localTm);
-        return std::wstring(buffer);
     };
 
     auto sleepBetweenSteps = [&]()
@@ -502,187 +592,22 @@ int SolockController::RunAllFeaturesAcceleratedDebug()
         }
     };
 
-    DebugLog(L"[ACCEL] accelerated full-feature debug started.");
+    DebugLog(L"[ACCEL] hotspot-only debug started.");
 
-    const int middayStartMinuteOfDay =
-        ClampMinuteOfDay(m_options.middayShutdownStartHour, m_options.middayShutdownStartMinute);
-    const int middayEndMinuteOfDay =
-        ClampMinuteOfDay(m_options.middayShutdownEndHour, m_options.middayShutdownEndMinute);
-    const int eveningStartMinuteOfDay =
-        ClampMinuteOfDay(m_options.eveningPostActionStartHour, m_options.eveningPostActionStartMinute);
-    if (middayEndMinuteOfDay < middayStartMinuteOfDay ||
-        eveningStartMinuteOfDay < middayEndMinuteOfDay)
-    {
-        recordStep(L"ScheduleValidation", false);
-        return 20;
-    }
+    ResetEveningHotspotAlias();
+    recordStep(L"hotspot / EnsurePreActionHotspot(initial)", EnsurePreActionHotspot());
+    sleepBetweenSteps();
 
-    if (m_options.autoRegisterScheduledTask)
-    {
-        recordStep(L"EnsureStartupTaskRegistered", EnsureStartupTaskRegistered(m_options.scheduledTaskName));
-    }
+    ResetEveningHotspotAlias();
+    recordStep(L"hotspot / EnsureEveningHotspotState", EnsureEveningHotspotState());
+    sleepBetweenSteps();
 
-    recordStep(L"InitializeAudioVolumeMonitoring", InitializeAudioVolumeMonitoring());
-    recordStep(L"AssertKeepSystemAwake", AssertKeepSystemAwake());
-    recordStep(L"StartupEnsureTargetAppsNetworkingEnabled", EnsureTargetAppsNetworkingEnabled());
-
-    DebugLog(std::wstring(L"[ACCEL] current network usable: ") + (IsNetworkUsableNow() ? L"yes" : L"no"));
-    DebugLogRunningBlockedProcesses(L"accelerated debug start", ResolveRunningBlockedProcesses());
-
-    int firstScheduledStartMinuteOfDay = std::max(0, std::min(middayStartMinuteOfDay, eveningStartMinuteOfDay) - 2);
-    if (!m_options.scheduledBlockStartMinutesOfDay.empty())
-    {
-        firstScheduledStartMinuteOfDay = std::clamp(
-            *std::min_element(
-                m_options.scheduledBlockStartMinutesOfDay.begin(),
-                m_options.scheduledBlockStartMinutesOfDay.end()),
-            0,
-            kMaxMinuteOfDay);
-    }
-
-    std::vector<DebugCheckpoint> checkpoints =
-    {
-        { L"scheduled-unblocked", std::max(0, firstScheduledStartMinuteOfDay - 1) },
-        { L"scheduled-blocked", firstScheduledStartMinuteOfDay }
-    };
-
-    if (middayEndMinuteOfDay > middayStartMinuteOfDay)
-    {
-        checkpoints.push_back({ L"midday-blocked", std::min(middayStartMinuteOfDay + 1, kMaxMinuteOfDay) });
-    }
-
-    if (middayEndMinuteOfDay < eveningStartMinuteOfDay)
-    {
-        checkpoints.push_back({ L"post-midday-recovery", std::min(middayEndMinuteOfDay + 1, kMaxMinuteOfDay) });
-    }
-
-    checkpoints.push_back({ L"evening-post-action", std::min(eveningStartMinuteOfDay + 1, kMaxMinuteOfDay) });
-
-    const auto debugBaseNow = std::chrono::system_clock::now();
-    const auto idleThreshold = std::chrono::minutes(std::max(1, m_options.inactivityThresholdMinutes));
-
-    for (const auto& checkpoint : checkpoints)
-    {
-        const auto simulatedNow = LocalAtOnSameDay(
-            debugBaseNow,
-            checkpoint.minuteOfDay / 60,
-            checkpoint.minuteOfDay % 60,
-            0);
-        const auto scheduleTimes = GetScheduleTimesFor(simulatedNow);
-        const Phase phase = GetPhaseAt(simulatedNow, scheduleTimes);
-        const bool scheduledBlockActive = ShouldBlockTargetAppsAt(simulatedNow);
-
-        std::wostringstream checkpointLog;
-        checkpointLog << L"[ACCEL] checkpoint " << checkpoint.label
-            << L", simulatedNow=" << formatLocalTime(simulatedNow)
-            << L", phase=" << phaseToString(phase)
-            << L", scheduledBlock=" << (scheduledBlockActive ? L"on" : L"off");
-        DebugLog(checkpointLog.str());
-
-        recordStep(
-            std::wstring(checkpoint.label) + L" / EnsureAudioVolumeMatchesPhase",
-            EnsureAudioVolumeMatchesPhase(phase));
-
-        switch (phase)
-        {
-        case Phase::ScheduledBlocks:
-            recordStep(
-                std::wstring(checkpoint.label) + L" / EnsurePreActionHotspot",
-                EnsurePreActionHotspot());
-            recordStep(
-                std::wstring(checkpoint.label) + L" / EnsureTargetAppsNetworkingMatchesSchedule",
-                EnsureTargetAppsNetworkingMatchesSchedule(simulatedNow));
-            break;
-
-        case Phase::MiddayIdleShutdown:
-        {
-            recordStep(
-                std::wstring(checkpoint.label) + L" / EnsurePreActionHotspot",
-                EnsurePreActionHotspot());
-            recordStep(
-                std::wstring(checkpoint.label) + L" / EnsureTargetAppsNetworkingBlocked",
-                EnsureTargetAppsNetworkingBlocked());
-
-            const bool idleTriggered =
-                m_options.debugForceIdleState || IsInputIdleForAtLeast(idleThreshold);
-            DebugLog(
-                std::wstring(L"[ACCEL] midday idle trigger: ") +
-                (idleTriggered
-                    ? (m_options.debugForceIdleState ? L"forced" : L"detected")
-                    : L"not met"));
-
-            if (idleTriggered)
-            {
-                if (m_options.debugSkipDestructiveActions)
-                {
-                    DebugLog(L"[ACCEL] midday shutdown simulated; ShutdownMachineNow skipped.");
-                    recordStep(std::wstring(checkpoint.label) + L" / ShutdownMachineNow(simulated)", true);
-                }
-                else
-                {
-                    recordStep(
-                        std::wstring(checkpoint.label) + L" / ShutdownMachineNow",
-                        ShutdownMachineNow());
-                }
-            }
-            break;
-        }
-
-        case Phase::EveningPostAction:
-        {
-            recordStep(
-                std::wstring(checkpoint.label) + L" / EnsureEveningPostActionState",
-                EnsureEveningPostActionState());
-
-            m_eveningIdleLockApplied = false;
-            const bool idleTriggered =
-                m_options.debugForceIdleState || IsInputIdleForAtLeast(idleThreshold);
-            DebugLog(
-                std::wstring(L"[ACCEL] evening idle trigger: ") +
-                (idleTriggered
-                    ? (m_options.debugForceIdleState ? L"forced" : L"detected")
-                    : L"not met"));
-
-            if (idleTriggered)
-            {
-                if (m_options.debugSkipDestructiveActions)
-                {
-                    DebugLog(L"[ACCEL] evening lock and display-off simulated; destructive actions skipped.");
-                    recordStep(std::wstring(checkpoint.label) + L" / ApplyEveningIdleLockIfNeeded(simulated)", true);
-                }
-                else if (m_options.debugForceIdleState)
-                {
-                    const bool lockOk = recordStep(
-                        std::wstring(checkpoint.label) + L" / LockCurrentSession",
-                        LockCurrentSession());
-                    ::Sleep(1200);
-                    const bool displayOk = recordStep(
-                        std::wstring(checkpoint.label) + L" / TurnOffDisplay",
-                        TurnOffDisplay());
-                    if (lockOk && displayOk)
-                    {
-                        m_eveningIdleLockApplied = true;
-                    }
-                }
-                else
-                {
-                    recordStep(
-                        std::wstring(checkpoint.label) + L" / ApplyEveningIdleLockIfNeeded",
-                        ApplyEveningIdleLockIfNeeded());
-                }
-            }
-            break;
-        }
-        }
-
-        sleepBetweenSteps();
-    }
-
-    recordStep(L"CleanupEnsureTargetAppsNetworkingEnabled", EnsureTargetAppsNetworkingEnabled());
+    recordStep(L"hotspot / EnsurePreActionHotspot(restore)", EnsurePreActionHotspot());
+    ResetEveningHotspotAlias();
 
     int failureCount = 0;
     std::wostringstream summary;
-    summary << L"[ACCEL] accelerated debug completed with ";
+    summary << L"[ACCEL] hotspot-only debug completed with ";
     for (const auto& step : stepResults)
     {
         if (!step.ok)
@@ -862,6 +787,7 @@ int SolockController::RunWithSchedule()
         if (phase != Phase::EveningPostAction)
         {
             m_eveningIdleLockApplied = false;
+            ResetEveningHotspotAlias();
         }
 
         switch (phase)
@@ -1166,19 +1092,23 @@ bool SolockController::EnsurePreActionHotspot()
         DebugLog(L"[HOTSPOT] EnsurePreActionHotspot current SSID: " +
             (currentSsid.empty() ? std::wstring(L"<empty>") : currentSsid));
 
-        if (!currentSsid.empty() && currentSsid != m_options.postActionSsid)
-        {
-            SaveOriginalSsid(currentSsid);
-        }
-
         std::wstring originalSsid;
-        if (TryLoadOriginalSsid(originalSsid) &&
-            !originalSsid.empty() &&
-            originalSsid != m_options.postActionSsid &&
-            originalSsid != currentSsid)
+        const bool hasOriginalSsid = TryLoadOriginalSsid(originalSsid) && !originalSsid.empty();
+        if (hasOriginalSsid && !EqualsIgnoreCase(originalSsid, currentSsid))
         {
             DebugLog(L"[HOTSPOT] restoring original SSID for pre-action phase: " + originalSsid);
-            return EnsureHotspotOnWithSsid(originalSsid);
+            const bool restored = EnsureHotspotOnWithSsid(originalSsid);
+            if (restored)
+            {
+                ClearOriginalSsid();
+            }
+
+            return restored;
+        }
+
+        if (hasOriginalSsid && EqualsIgnoreCase(originalSsid, currentSsid))
+        {
+            ClearOriginalSsid();
         }
 
         DebugLog(L"[HOTSPOT] using current hotspot configuration for pre-action phase.");
@@ -1282,6 +1212,32 @@ bool SolockController::EnsureHotspotOnWithSsid(const std::wstring& desiredSsid)
         DebugLog(L"[HOTSPOT] EnsureHotspotOnWithSsid failed with an unknown exception.");
         return false;
     }
+}
+
+void SolockController::ResetEveningHotspotAlias()
+{
+    m_eveningHotspotAliasSource.clear();
+    m_eveningHotspotAlias.clear();
+}
+
+std::wstring SolockController::GetEveningHotspotAlias(const std::wstring& sourceSsid)
+{
+    const std::wstring effectiveSource = sourceSsid.empty() ? m_options.postActionSsid : sourceSsid;
+    if (m_eveningHotspotAlias.empty() || !EqualsIgnoreCase(m_eveningHotspotAliasSource, effectiveSource))
+    {
+        m_eveningHotspotAliasSource = effectiveSource;
+        m_eveningHotspotAlias = BuildRandomizedHotspotAlias(effectiveSource);
+        DebugLog(L"[HOTSPOT] generated evening alias SSID from " +
+            (effectiveSource.empty() ? std::wstring(L"<empty>") : effectiveSource) +
+            L" to " + m_eveningHotspotAlias);
+    }
+
+    return m_eveningHotspotAlias;
+}
+
+std::wstring SolockController::BuildRandomizedHotspotAlias(const std::wstring& sourceSsid)
+{
+    return BuildCarrierStyleHotspotAlias(sourceSsid);
 }
 
 bool SolockController::EnsureTargetAppsNetworkingBlocked()
@@ -1578,29 +1534,39 @@ void SolockController::CloseWfpEngine()
     m_installedBlockedAppFilters.clear();
 }
 
-bool SolockController::EnsureEveningPostActionState()
+bool SolockController::EnsureEveningHotspotState()
 {
-    DebugLog(L"[WFP] evening post-action started, ensuring outbound block filters are installed.");
-    const bool appBlockOk = EnsureTargetAppsNetworkingBlocked();
-    DebugLog(std::wstring(L"[WFP] outbound block result: ") + (appBlockOk ? L"success" : L"failure"));
-
     if (ShouldSkipHotspotActions())
     {
-        DebugLog(L"[HOTSPOT] debug skip enabled; evening hotspot step bypassed.");
-        return appBlockOk;
+        DebugLog(L"[HOTSPOT] debug skip enabled; evening hotspot-only step bypassed.");
+        return true;
     }
 
     bool hotspotOk = false;
+    std::wstring desiredSsid;
     try
     {
         auto manager = CreateTetheringManager();
         const auto currentConfig = manager.GetCurrentAccessPointConfiguration();
         const std::wstring currentSsid = ToWString(currentConfig.Ssid());
+        std::wstring originalSsid;
+        const bool hasOriginalSsid = TryLoadOriginalSsid(originalSsid) && !originalSsid.empty();
 
-        if (!currentSsid.empty() && currentSsid != m_options.postActionSsid)
+        if (!currentSsid.empty() && !hasOriginalSsid)
         {
             SaveOriginalSsid(currentSsid);
+            originalSsid = currentSsid;
         }
+
+        const std::wstring aliasSource =
+            !originalSsid.empty()
+                ? originalSsid
+                : (!currentSsid.empty() ? currentSsid : m_options.postActionSsid);
+        desiredSsid = GetEveningHotspotAlias(aliasSource);
+
+        DebugLog(L"[HOTSPOT] evening alias source SSID=" +
+            (aliasSource.empty() ? std::wstring(L"<empty>") : aliasSource) +
+            L", desired SSID=" + desiredSsid);
     }
     catch (const std::exception& ex)
     {
@@ -1611,7 +1577,22 @@ bool SolockController::EnsureEveningPostActionState()
         DebugLog(L"[HOTSPOT] EnsureEveningPostActionState snapshot failed with an unknown exception.");
     }
 
-    hotspotOk = EnsureHotspotOnWithSsid(m_options.postActionSsid);
+    if (desiredSsid.empty())
+    {
+        desiredSsid = GetEveningHotspotAlias(m_options.postActionSsid);
+    }
+
+    hotspotOk = EnsureHotspotOnWithSsid(desiredSsid);
+    return hotspotOk;
+}
+
+bool SolockController::EnsureEveningPostActionState()
+{
+    DebugLog(L"[WFP] evening post-action started, ensuring outbound block filters are installed.");
+    const bool appBlockOk = EnsureTargetAppsNetworkingBlocked();
+    DebugLog(std::wstring(L"[WFP] outbound block result: ") + (appBlockOk ? L"success" : L"failure"));
+
+    const bool hotspotOk = EnsureEveningHotspotState();
     return hotspotOk && appBlockOk;
 }
 
@@ -1729,6 +1710,23 @@ bool SolockController::EnsureStateDirectoryExists()
     }
 
     return ::GetLastError() == ERROR_ALREADY_EXISTS;
+}
+
+bool SolockController::ClearOriginalSsid()
+{
+    const std::wstring path = GetOriginalSsidStateFilePath();
+    if (path.empty())
+    {
+        return false;
+    }
+
+    if (::DeleteFileW(path.c_str()) != FALSE)
+    {
+        return true;
+    }
+
+    const DWORD error = ::GetLastError();
+    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
 }
 
 bool SolockController::SaveOriginalSsid(const std::wstring& ssid)
