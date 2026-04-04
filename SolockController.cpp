@@ -548,7 +548,7 @@ int SolockController::RunAllFeaturesAcceleratedDebug()
 
     if (middayEndMinuteOfDay > middayStartMinuteOfDay)
     {
-        checkpoints.push_back({ L"midday-idle", std::min(middayStartMinuteOfDay + 1, kMaxMinuteOfDay) });
+        checkpoints.push_back({ L"midday-blocked", std::min(middayStartMinuteOfDay + 1, kMaxMinuteOfDay) });
     }
 
     if (middayEndMinuteOfDay < eveningStartMinuteOfDay)
@@ -600,8 +600,8 @@ int SolockController::RunAllFeaturesAcceleratedDebug()
                 std::wstring(checkpoint.label) + L" / EnsurePreActionHotspot",
                 EnsurePreActionHotspot());
             recordStep(
-                std::wstring(checkpoint.label) + L" / EnsureTargetAppsNetworkingEnabled",
-                EnsureTargetAppsNetworkingEnabled());
+                std::wstring(checkpoint.label) + L" / EnsureTargetAppsNetworkingBlocked",
+                EnsureTargetAppsNetworkingBlocked());
 
             const bool idleTriggered =
                 m_options.debugForceIdleState || IsInputIdleForAtLeast(idleThreshold);
@@ -840,6 +840,10 @@ int SolockController::RunWithSchedule()
             EnsureTargetAppsNetworkingMatchesSchedule(now);
             WaitForSystemAndNetworkStability();
         }
+        else if (initialPhase == Phase::MiddayIdleShutdown)
+        {
+            EnsureTargetAppsNetworkingBlocked();
+        }
 
         EnsurePreActionHotspot();
     }
@@ -869,7 +873,7 @@ int SolockController::RunWithSchedule()
 
         case Phase::MiddayIdleShutdown:
             EnsurePreActionHotspot();
-            EnsureTargetAppsNetworkingEnabled();
+            EnsureTargetAppsNetworkingBlocked();
             if (IsInputIdleForAtLeast(idleThreshold))
             {
                 return ShutdownMachineNow() ? 0 : 21;
