@@ -1,0 +1,157 @@
+#pragma once
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
+#include <Windows.h>
+
+#include <chrono>
+#include <string>
+#include <vector>
+
+struct IMMDeviceEnumerator;
+struct IMMNotificationClient;
+
+class SolockController
+{
+public:
+    struct Options
+    {
+        int startupStableSeconds = 8;
+        int startupMaxWaitSeconds = 45;
+        std::vector<int> scheduledBlockStartMinutesOfDay =
+        {
+            8 * 60 + 40,
+            9 * 60 + 30,
+            10 * 60 + 20,
+            11 * 60 + 10,
+            15 * 60 + 10,
+            16 * 60 + 0,
+            16 * 60 + 50
+        };
+        int scheduledBlockDurationMinutes = 10;
+        int middayShutdownStartHour = 12;
+        int middayShutdownStartMinute = 10;
+        int middayShutdownEndHour = 12;
+        int middayShutdownEndMinute = 50;
+        int eveningPostActionStartHour = 17;
+        int eveningPostActionStartMinute = 40;
+        int inactivityThresholdMinutes = 10;
+        int heartbeatSeconds = 15;
+        float normalVolumePercent = 60.0f;
+        float reducedVolumePercent = 35.0f;
+        std::wstring postActionSsid = L"CMCC-24dF";
+        std::vector<std::wstring> blockedProcessNames =
+        {
+            L"SeewoHugoLauncher.exe",
+            L"SeewoServiceAssistant.exe"
+        };
+
+        bool autoRegisterScheduledTask = true;
+        std::wstring scheduledTaskName = L"Solock AutoStart";
+        bool debugForceIdleState = true;
+        bool debugSkipDestructiveActions = true;
+        bool debugSkipHotspotActions = true;
+        int debugStepDelayMilliseconds = 250;
+    };
+
+    explicit SolockController(const Options& options = Options());
+    ~SolockController();
+
+    int Run();
+    int RunAllFeaturesAcceleratedDebug();
+    int RunBlockedAppNetworkingDebug();
+
+private:
+    struct ScheduleTimes
+    {
+        std::chrono::system_clock::time_point middayShutdownStartTime;
+        std::chrono::system_clock::time_point middayShutdownEndTime;
+        std::chrono::system_clock::time_point eveningPostActionStartTime;
+    };
+
+    struct InstalledBlockedAppFilter
+    {
+        std::wstring appPath;
+        UINT64 ipv4FilterId;
+        UINT64 ipv6FilterId;
+    };
+
+    struct RunningBlockedProcess
+    {
+        DWORD processId;
+        std::wstring appPath;
+    };
+
+    enum class Phase
+    {
+        ScheduledBlocks,
+        MiddayIdleShutdown,
+        EveningPostAction,
+    };
+
+    Options m_options;
+    bool m_eveningIdleLockApplied;
+    HANDLE m_wfpEngine;
+    bool m_blockedAppFiltersInstalled;
+    std::vector<InstalledBlockedAppFilter> m_installedBlockedAppFilters;
+    HANDLE m_audioDeviceChangeEvent;
+    IMMDeviceEnumerator* m_audioDeviceEnumerator;
+    IMMNotificationClient* m_audioNotificationClient;
+
+    static std::chrono::system_clock::time_point LocalAtOnSameDay(
+        const std::chrono::system_clock::time_point& referenceNow,
+        int hour,
+        int minute,
+        int second = 0);
+    ScheduleTimes GetScheduleTimesFor(const std::chrono::system_clock::time_point& now) const;
+    static Phase GetPhaseAt(
+        const std::chrono::system_clock::time_point& now,
+        const ScheduleTimes& scheduleTimes);
+
+    int RunWithSchedule();
+
+    bool WaitForSystemAndNetworkStability();
+    bool IsNetworkUsableNow() const;
+    bool IsInputIdleForAtLeast(std::chrono::milliseconds idleThreshold) const;
+
+    bool AssertKeepSystemAwake();
+    void ClearKeepSystemAwake();
+    float GetDesiredVolumePercentForPhase(Phase phase) const;
+    bool InitializeAudioVolumeMonitoring();
+    void ShutdownAudioVolumeMonitoring();
+    bool EnsureAudioVolumeMatchesPhase(Phase phase) const;
+    void WaitForHeartbeatOrAudioEvent(int heartbeatSeconds) const;
+
+    bool EnsurePreActionHotspot();
+    bool EnsureHotspotOnWithCurrentConfig();
+    bool EnsureHotspotOnWithSsid(const std::wstring& desiredSsid);
+    bool EnsureTargetAppsNetworkingBlocked();
+    bool EnsureTargetAppsNetworkingEnabled();
+    std::vector<RunningBlockedProcess> ResolveRunningBlockedProcesses() const;
+    bool EnsureTargetAppsNetworkingMatchesSchedule(const std::chrono::system_clock::time_point& now);
+    bool ShouldBlockTargetAppsAt(const std::chrono::system_clock::time_point& now) const;
+    void CloseWfpEngine();
+    bool EnsureEveningPostActionState();
+    bool ApplyEveningIdleLockIfNeeded();
+    bool ShouldSkipHotspotActions() const;
+    void DebugLogRunningBlockedProcesses(
+        const wchar_t* stage,
+        const std::vector<RunningBlockedProcess>& runningProcesses) const;
+
+    bool LockCurrentSession();
+    bool TurnOffDisplay();
+    bool ShutdownMachineNow();
+
+    static std::wstring GetStateDirectoryPath();
+    static std::wstring GetOriginalSsidStateFilePath();
+    static bool EnsureStateDirectoryExists();
+    static bool SaveOriginalSsid(const std::wstring& ssid);
+    static bool TryLoadOriginalSsid(std::wstring& ssid);
+
+    static std::wstring GetCurrentExePath();
+    static std::wstring GetCurrentExeDirectory();
+    static std::wstring GetCurrentUserTaskUserId();
+    static bool EnsureStartupTaskRegistered(const std::wstring& taskName);
+};
