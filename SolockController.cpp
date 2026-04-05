@@ -12,6 +12,7 @@
 #include <endpointvolume.h>
 #include <fwpmu.h>
 #include <ShlObj.h>
+#include <WtsApi32.h>
 #include <comdef.h>
 #include <taskschd.h>
 
@@ -36,6 +37,7 @@
 #pragma comment(lib, "taskschd.lib")
 #pragma comment(lib, "comsuppw.lib")
 #pragma comment(lib, "fwpuclnt.lib")
+#pragma comment(lib, "wtsapi32.lib")
 
 using namespace winrt;
 using namespace Windows::Networking::Connectivity;
@@ -737,6 +739,26 @@ namespace
         return true;
     }
 
+    bool TryParseStrictFloat(const std::wstring& value, float& parsedValue)
+    {
+        const std::wstring trimmed = TrimWhitespace(value);
+        if (trimmed.empty())
+        {
+            return false;
+        }
+
+        std::wistringstream input(trimmed);
+        float result = 0.0f;
+        wchar_t trailing = L'\0';
+        if (!(input >> result) || (input >> trailing))
+        {
+            return false;
+        }
+
+        parsedValue = result;
+        return true;
+    }
+
     bool TryParseMinuteOfDay(const std::wstring& value, int& minuteOfDay)
     {
         const std::wstring trimmed = TrimWhitespace(value);
@@ -856,6 +878,86 @@ namespace
         const size_t prefixLength = std::wcslen(prefix);
         return value.size() >= prefixLength &&
             _wcsnicmp(value.c_str(), prefix, prefixLength) == 0;
+    }
+
+    bool TryGetCurrentSessionLockedState(bool& locked)
+    {
+        locked = false;
+
+        LPWSTR rawInfo = nullptr;
+        DWORD bytes = 0;
+        if (!::WTSQuerySessionInformationW(
+            WTS_CURRENT_SERVER_HANDLE,
+            WTS_CURRENT_SESSION,
+            WTSSessionInfoEx,
+            &rawInfo,
+            &bytes) ||
+            rawInfo == nullptr ||
+            bytes < sizeof(WTSINFOEXW))
+        {
+            if (rawInfo != nullptr)
+            {
+                ::WTSFreeMemory(rawInfo);
+            }
+            return false;
+        }
+
+        const WTSINFOEXW* info = reinterpret_cast<const WTSINFOEXW*>(rawInfo);
+        bool ok = false;
+        if (info->Level == 1)
+        {
+            const LONG sessionFlags = info->Data.WTSInfoExLevel1.SessionFlags;
+            if (sessionFlags == WTS_SESSIONSTATE_LOCK)
+            {
+                locked = true;
+                ok = true;
+            }
+            else if (sessionFlags == WTS_SESSIONSTATE_UNLOCK)
+            {
+                locked = false;
+                ok = true;
+            }
+        }
+
+        ::WTSFreeMemory(rawInfo);
+        return ok;
+    }
+
+    bool TryGetCurrentInputDesktopName(std::wstring& desktopName)
+    {
+        desktopName.clear();
+
+        HDESK desktop = ::OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
+        if (desktop == nullptr)
+        {
+            return false;
+        }
+
+        DWORD requiredBytes = 0;
+        ::GetUserObjectInformationW(desktop, UOI_NAME, nullptr, 0, &requiredBytes);
+        if (requiredBytes < sizeof(wchar_t))
+        {
+            ::CloseDesktop(desktop);
+            return false;
+        }
+
+        std::wstring buffer(requiredBytes / sizeof(wchar_t), L'\0');
+        const BOOL ok = ::GetUserObjectInformationW(
+            desktop,
+            UOI_NAME,
+            buffer.data(),
+            requiredBytes,
+            &requiredBytes);
+        ::CloseDesktop(desktop);
+        if (!ok || requiredBytes < sizeof(wchar_t))
+        {
+            return false;
+        }
+
+        const size_t length = (requiredBytes / sizeof(wchar_t)) - 1;
+        buffer.resize(length);
+        desktopName = std::move(buffer);
+        return !desktopName.empty();
     }
 
     std::mt19937& GetRandomGenerator()
@@ -1489,12 +1591,41 @@ bool SolockController::IsInputIdleForAtLeast(const std::chrono::milliseconds idl
 
 float SolockController::GetDesiredVolumePercentForPhase(const Phase phase) const
 {
+    const ExternalOverrides overrides = LoadExternalOverrides();
     if (phase == Phase::MiddayIdleShutdown || phase == Phase::EveningPostAction)
     {
-        return std::clamp(m_options.reducedVolumePercent, 0.0f, 100.0f);
+        const float configuredVolume = overrides.hasReducedVolumePercent
+            ? overrides.reducedVolumePercent
+            : m_options.reducedVolumePercent;
+        return std::clamp(configuredVolume, 0.0f, 100.0f);
     }
 
-    return std::clamp(m_options.normalVolumePercent, 0.0f, 100.0f);
+    const float configuredVolume = overrides.hasNormalVolumePercent
+        ? overrides.normalVolumePercent
+        : m_options.normalVolumePercent;
+    return std::clamp(configuredVolume, 0.0f, 100.0f);
+}
+
+bool SolockController::ShouldMuteAudioForPhase(const Phase phase) const
+{
+    return phase == Phase::EveningPostAction && !IsCurrentSessionUnlockedOnDesktop();
+}
+
+bool SolockController::IsCurrentSessionUnlockedOnDesktop() const
+{
+    bool locked = false;
+    if (TryGetCurrentSessionLockedState(locked) && locked)
+    {
+        return false;
+    }
+
+    std::wstring desktopName;
+    if (TryGetCurrentInputDesktopName(desktopName))
+    {
+        return EqualsIgnoreCase(desktopName, L"Default");
+    }
+
+    return !locked;
 }
 
 bool SolockController::InitializeAudioVolumeMonitoring()
@@ -1639,12 +1770,28 @@ bool SolockController::EnsureAudioVolumeMatchesPhase(const Phase phase) const
     }
 
     const float desiredScalar = GetDesiredVolumePercentForPhase(phase) / 100.0f;
-    float currentScalar = 0.0f;
-    const HRESULT getVolumeStatus = endpointVolume->GetMasterVolumeLevelScalar(&currentScalar);
-    bool ok = SUCCEEDED(getVolumeStatus);
-    if (ok && std::fabs(currentScalar - desiredScalar) > 0.01f)
+    const bool shouldMute = ShouldMuteAudioForPhase(phase);
+    bool ok = true;
+
+    BOOL currentMute = FALSE;
+    if (FAILED(endpointVolume->GetMute(&currentMute)))
     {
-        ok = SUCCEEDED(endpointVolume->SetMasterVolumeLevelScalar(desiredScalar, nullptr));
+        ok = false;
+    }
+    else if ((currentMute != FALSE) != shouldMute)
+    {
+        ok = SUCCEEDED(endpointVolume->SetMute(shouldMute ? TRUE : FALSE, nullptr));
+    }
+
+    if (ok && !shouldMute)
+    {
+        float currentScalar = 0.0f;
+        const HRESULT getVolumeStatus = endpointVolume->GetMasterVolumeLevelScalar(&currentScalar);
+        ok = SUCCEEDED(getVolumeStatus);
+        if (ok && std::fabs(currentScalar - desiredScalar) > 0.01f)
+        {
+            ok = SUCCEEDED(endpointVolume->SetMasterVolumeLevelScalar(desiredScalar, nullptr));
+        }
     }
 
     endpointVolume->Release();
@@ -2142,9 +2289,9 @@ bool SolockController::IsCustomBlockActiveAt(
     const std::chrono::system_clock::time_point& now,
     const ExternalOverrides& overrides)
 {
-    if (overrides.signature != m_customBlockConfigSignature)
+    if (overrides.customBlockSignature != m_customBlockConfigSignature)
     {
-        m_customBlockConfigSignature = overrides.signature;
+        m_customBlockConfigSignature = overrides.customBlockSignature;
         m_customBlockStates.assign(overrides.customBlocks.size(), CustomBlockRuntimeState{});
     }
     else if (m_customBlockStates.size() != overrides.customBlocks.size())
@@ -2290,6 +2437,7 @@ bool SolockController::ApplyEveningIdleLockIfNeeded()
     if (lockOk && displayOk)
     {
         m_eveningIdleLockApplied = true;
+        EnsureAudioVolumeMatchesPhase(Phase::EveningPostAction);
     }
 
     return lockOk && displayOk;
@@ -2520,6 +2668,7 @@ SolockController::ExternalOverrides SolockController::LoadExternalOverrides()
     }
 
     RawCustomBlockConfig rawBlock;
+    std::wstring currentSection;
     bool inCustomBlockSection = false;
     auto finalizeCustomBlock = [&]()
     {
@@ -2582,12 +2731,8 @@ SolockController::ExternalOverrides SolockController::LoadExternalOverrides()
                 rawBlock = RawCustomBlockConfig{};
             }
 
+            currentSection = sectionName;
             inCustomBlockSection = EqualsIgnoreCase(sectionName, L"custom_block");
-            continue;
-        }
-
-        if (!inCustomBlockSection)
-        {
             continue;
         }
 
@@ -2598,17 +2743,40 @@ SolockController::ExternalOverrides SolockController::LoadExternalOverrides()
             continue;
         }
 
-        if (EqualsIgnoreCase(key, L"start"))
+        if (inCustomBlockSection)
         {
-            rawBlock.start = value;
+            if (EqualsIgnoreCase(key, L"start"))
+            {
+                rawBlock.start = value;
+            }
+            else if (EqualsIgnoreCase(key, L"duration_minutes"))
+            {
+                rawBlock.durationMinutes = value;
+            }
+            else if (EqualsIgnoreCase(key, L"repeat_count"))
+            {
+                rawBlock.repeatCount = value;
+            }
         }
-        else if (EqualsIgnoreCase(key, L"duration_minutes"))
+        else if (EqualsIgnoreCase(currentSection, L"volume"))
         {
-            rawBlock.durationMinutes = value;
-        }
-        else if (EqualsIgnoreCase(key, L"repeat_count"))
-        {
-            rawBlock.repeatCount = value;
+            float parsedVolume = 0.0f;
+            if (!TryParseStrictFloat(value, parsedVolume))
+            {
+                continue;
+            }
+
+            parsedVolume = std::clamp(parsedVolume, 0.0f, 100.0f);
+            if (EqualsIgnoreCase(key, L"normal_percent"))
+            {
+                overrides.hasNormalVolumePercent = true;
+                overrides.normalVolumePercent = parsedVolume;
+            }
+            else if (EqualsIgnoreCase(key, L"reduced_percent"))
+            {
+                overrides.hasReducedVolumePercent = true;
+                overrides.reducedVolumePercent = parsedVolume;
+            }
         }
     }
 
@@ -2619,12 +2787,12 @@ SolockController::ExternalOverrides SolockController::LoadExternalOverrides()
 
     for (const auto& block : overrides.customBlocks)
     {
-        if (!overrides.signature.empty())
+        if (!overrides.customBlockSignature.empty())
         {
-            overrides.signature += L"||";
+            overrides.customBlockSignature += L"||";
         }
 
-        overrides.signature += block.signature;
+        overrides.customBlockSignature += block.signature;
     }
 
     return overrides;

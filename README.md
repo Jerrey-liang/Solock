@@ -6,7 +6,7 @@
 - 监听默认音频输出设备变化，并把系统音量拉回目标值
 - 维持 Windows 移动热点可用
 - 在指定时间段内对目标进程安装 WFP 出站拦截规则
-- 支持从本地配置文件追加多个自定义断网时间窗
+- 支持从本地配置文件追加多个自定义断网时间窗和音量覆盖
 - 在午间空闲达到阈值时立即关机
 - 在晚间空闲达到阈值时锁屏并关闭显示器
 - 启动时为当前用户注册“登录后自动启动”的计划任务
@@ -33,7 +33,7 @@
 | --- | --- | --- |
 | `ScheduledBlocks` | 除午间和晚间外的其他时段 | 保持热点可用；按预设时间窗对目标进程断网；额外检查自定义断网时间窗；音量保持正常值 |
 | `MiddayIdleShutdown` | `12:10` - `12:50` | 保持热点可用；持续对目标进程断网；空闲达到阈值后立即关机；音量降到较低值 |
-| `EveningPostAction` | `17:40` 之后 | 持续对目标进程断网；将热点切换到随机化晚间别名；空闲达到阈值后锁屏并关闭显示器；音量降到较低值 |
+| `EveningPostAction` | `17:40` 之后 | 持续对目标进程断网；将热点切换到随机化晚间别名；空闲达到阈值后锁屏并关闭显示器；锁屏未回到桌面期间静音，解锁回到桌面后恢复晚间目标音量 |
 
 阶段判断优先级如下：
 
@@ -92,6 +92,10 @@
 [state]
 original_hotspot_ssid=
 
+[volume]
+normal_percent=
+reduced_percent=
+
 [custom_block]
 start=
 duration_minutes=
@@ -103,10 +107,30 @@ duration_minutes=
 repeat_count=
 ```
 
+一个更完整的示例：
+
+```ini
+[state]
+original_hotspot_ssid=
+
+[volume]
+normal_percent=55
+reduced_percent=20
+
+[custom_block]
+start=19:30
+duration_minutes=45
+repeat_count=1
+```
+
 字段说明：
 
 - `[state] original_hotspot_ssid`
   由程序维护的运行时状态，用于保存“晚间切换前的原始 SSID”，供白天阶段恢复。通常不需要手动编辑。
+- `[volume] normal_percent`
+  可选。覆盖 `ScheduledBlocks` 阶段的目标音量百分比，范围会被限制到 `0` - `100`。
+- `[volume] reduced_percent`
+  可选。覆盖 `MiddayIdleShutdown` 和 `EveningPostAction` 阶段的目标音量百分比，范围会被限制到 `0` - `100`。
 - `[custom_block] start`
   一个自定义断网时间窗的开始时刻，使用 24 小时制 `HH:MM`。
 - `[custom_block] duration_minutes`
@@ -229,7 +253,7 @@ WFP 规则依附于动态 session，程序会在以下时机清理：
 程序现在只使用一个本地文件：
 
 - `%LocalAppData%\Solock\hotspot_and_block.ini`
-  同时承载运行时状态和用户配置。其中 `[state] original_hotspot_ssid` 用于保存“晚间切换前的原始 SSID”，`[custom_block]` 用于定义一个或多个自定义断网时间窗。
+  同时承载运行时状态和用户配置。其中 `[state] original_hotspot_ssid` 用于保存“晚间切换前的原始 SSID”，`[volume]` 用于覆盖目标音量，`[custom_block]` 用于定义一个或多个自定义断网时间窗。
 
 如果本地还残留旧版 `%LocalAppData%\Solock\original_hotspot_ssid.txt`，程序会在读取到它时自动迁移到 `hotspot_and_block.ini`。
 
@@ -240,6 +264,18 @@ WFP 规则依附于动态 session，程序会在以下时机清理：
 - `ScheduledBlocks`：`60%`
 - `MiddayIdleShutdown`：`35%`
 - `EveningPostAction`：`35%`
+
+如果 `%LocalAppData%\Solock\hotspot_and_block.ini` 中存在：
+
+```ini
+[volume]
+normal_percent=60
+reduced_percent=35
+```
+
+则会优先使用这里的值覆盖内置默认值。
+
+晚间阶段下，如果 Windows 当前处于锁屏且尚未回到桌面，程序会把系统切到静音；当 Windows 解锁并重新进入桌面后，程序会自动取消静音并恢复到 `reduced_percent`（未配置时回退到 `reducedVolumePercent`）。
 
 实现方式：
 
@@ -278,6 +314,8 @@ WFP 规则依附于动态 session，程序会在以下时机清理：
 - 热点持续保持为配置文件指定名称或晚间随机别名
 - 如果连续空闲达到阈值，则调用 `LockWorkStation()` 锁屏
 - 锁屏约 1.2 秒后广播 `SC_MONITORPOWER` 关闭显示器
+- 在锁屏且显示器关闭、尚未重新回到桌面期间，系统音量会被切到静音
+- 当 Windows 解锁并重新进入桌面后，程序会自动恢复到夜间目标音量
 
 这个动作在同一轮晚间阶段里只会成功执行一次；离开晚间阶段后，该标记会被清零。
 
@@ -326,6 +364,6 @@ WFP 规则依附于动态 session，程序会在以下时机清理：
 
 1. Release 模式下会真实执行计划任务注册、热点控制、WFP 断网、关机、锁屏和灭屏。
 2. 晚间热点逻辑只保留内置随机运营商风格别名，不再支持通过配置文件指定固定热点名。
-3. 自定义断网时间窗是可选的，并且由 `%LocalAppData%\Solock\hotspot_and_block.ini` 控制。
-4. 内置默认策略仍然写在 `SolockController::Options` 中，但运行时原始 SSID 状态和多个自定义断网窗口现在都放在同一个外部 INI 文件里。
+3. 自定义断网时间窗和音量覆盖都是可选的，并且都由 `%LocalAppData%\Solock\hotspot_and_block.ini` 控制。
+4. 内置默认策略仍然写在 `SolockController::Options` 中，但运行时原始 SSID 状态、外部音量覆盖和多个自定义断网窗口现在都放在同一个外部 INI 文件里。
 5. 如果程序未以足够权限运行，文档描述的部分系统级动作可能无法成功。

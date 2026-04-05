@@ -98,7 +98,11 @@ private:
     struct ExternalOverrides
     {
         std::vector<CustomBlockWindow> customBlocks;
-        std::wstring signature;
+        std::wstring customBlockSignature;
+        bool hasNormalVolumePercent = false;
+        float normalVolumePercent = 0.0f;
+        bool hasReducedVolumePercent = false;
+        float reducedVolumePercent = 0.0f;
     };
 
     struct CustomBlockRuntimeState
@@ -146,6 +150,8 @@ private:
     bool AssertKeepSystemAwake();
     void ClearKeepSystemAwake();
     float GetDesiredVolumePercentForPhase(Phase phase) const;
+    bool ShouldMuteAudioForPhase(Phase phase) const;
+    bool IsCurrentSessionUnlockedOnDesktop() const;
     bool InitializeAudioVolumeMonitoring();
     void ShutdownAudioVolumeMonitoring();
     bool EnsureAudioVolumeMatchesPhase(Phase phase) const;
