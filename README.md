@@ -11,28 +11,7 @@
 - 在晚间空闲达到阈值时锁屏并关闭显示器
 - 启动时为当前用户注册“登录后自动启动”的计划任务
 
-当前仓库的核心实现位于 `main.cpp`、`SolockController.h`、`SolockController.cpp`。
-
 ## 功能概览
-
-### 启动流程
-
-程序启动后会执行以下步骤：
-
-1. 初始化 WinRT 多线程 apartment。
-2. 构造 `SolockController`。
-3. Release 模式下执行 `Run()`。
-4. 如果启用了 `autoRegisterScheduledTask`，为当前用户创建或更新登录触发的计划任务。
-5. 初始化默认音频输出设备监听。
-6. 清理旧的动态 WFP 规则，确保目标应用初始可联网。
-7. 根据当前时间判定所处阶段，并立即应用对应策略。
-
-`main.cpp` 中的入口分流如下：
-
-- `Release`：执行 `Run()`，进入长期常驻调度。
-- `Debug`：执行 `RunAllFeaturesAcceleratedDebug()`。
-
-注意：当前 `RunAllFeaturesAcceleratedDebug()` 实际只做“热点相关链路”的快速演练，不会完整跑一遍所有正式调度逻辑。源码里另有 `RunBlockedAppNetworkingDebug()`，用于单独调试 WFP 断网能力，但默认入口没有调用它。
 
 ### 常驻循环
 
@@ -94,16 +73,12 @@
 | `postActionSsid` | `CMCC-24dF` | 晚间热点随机别名的后备来源 SSID |
 | `blockedProcessNames` | `SeewoHugoLauncher.exe`, `SeewoServiceAssistant.exe` | 需要受联网控制的进程名 |
 
-### 自启动与调试
+### 自启动
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `autoRegisterScheduledTask` | `true` | 启动时自动注册计划任务 |
 | `scheduledTaskName` | `Solock AutoStart` | 计划任务名称 |
-| `debugForceIdleState` | `true` | 目前已定义但未参与正式调度逻辑 |
-| `debugSkipDestructiveActions` | `true` | 目前已定义但未参与正式调度逻辑 |
-| `debugSkipHotspotActions` | `true` | Debug 模式下可跳过热点操作 |
-| `debugStepDelayMilliseconds` | `250` | Debug 热点演练的步进间隔 |
 
 ## 外部配置文件
 
@@ -155,14 +130,12 @@ repeat_count=
 
 ### 工作方式
 
-程序不是通过禁用网卡来断网，而是使用 Windows Filtering Platform（WFP）给目标应用安装动态出站拦截规则：
+程序使用 Windows Filtering Platform（WFP）给目标应用安装动态出站拦截规则：
 
 - 打开动态 WFP session
 - 注册自定义 sublayer
 - 用 `FwpmGetAppIdFromFileName0` 获取可执行文件的 `ALE_APP_ID`
 - 分别在 `ALE_AUTH_CONNECT_V4` 和 `ALE_AUTH_CONNECT_V6` 层安装 `FWP_ACTION_BLOCK`
-
-这意味着程序控制的是“指定进程能否发起新的出站连接”，而不是整机联网状态。
 
 ### 内置定时断网时间窗
 
@@ -344,61 +317,15 @@ WFP 规则依附于动态 session，程序会在以下时机清理：
 - 不限制执行时间：`PT0S`
 - 动作：启动当前 EXE，并把工作目录设为 EXE 所在目录
 
-## 项目结构
-
-| 文件 | 作用 |
-| --- | --- |
-| `main.cpp` | 程序入口、WinRT 初始化、全局异常处理、Debug/Release 分流 |
-| `SolockController.h` | 控制器声明、默认配置、阶段枚举、功能接口 |
-| `SolockController.cpp` | 全部核心实现：调度、热点、WFP、音量、空闲检测、关机、锁屏、计划任务、外部配置文件读取 |
-| `Solock/Solock.vcxproj` | Visual Studio 工程配置 |
-
-## 构建与运行
-
-### 开发环境
-
-- Visual Studio 2022
-- MSVC `v143`
-- Windows SDK `10.0`
-- 建议使用 `x64`
-- `x64` 配置启用了 `C++20`
-
-### 链接库
-
-源码中通过 `#pragma comment(lib, ...)` 链接了以下系统库：
-
-- `advapi32.lib`
-- `user32.lib`
-- `windowsapp.lib`
-- `shell32.lib`
-- `taskschd.lib`
-- `comsuppw.lib`
-- `fwpuclnt.lib`
-
-### 运行前提
-
-程序依赖以下 Windows 能力：
-
-- WinRT 网络连接状态读取
-- Windows 移动热点
-- 任务计划程序 COM 接口
-- WFP 过滤规则管理
-- 系统音量端点控制
-- 锁屏与关机权限
-
-由于涉及 WFP、计划任务高权限运行、关机和系统状态控制，实际使用时应以管理员权限运行，否则部分能力可能失败。
-
 ### 工程说明
 
 - `Debug|x64` 为控制台子系统，并显式要求 `RequireAdministrator`
 - `Release|x64` 为 Windows 子系统，入口符号为 `mainCRTStartup`
-- `Debug|x64` 的后置构建事件会尝试把产物复制到 `D:\C++\VMShare\Deploy\$(ProjectName)\$(Platform)\$(Configuration)`；这是本地开发路径，如不需要可自行调整
 
 ## 需要注意的实际行为
 
 1. Release 模式下会真实执行计划任务注册、热点控制、WFP 断网、关机、锁屏和灭屏。
-2. 当前 Debug 默认入口主要用于热点链路演练，不等同于完整调度模拟。
-3. 晚间热点逻辑只保留内置随机运营商风格别名，不再支持通过配置文件指定固定热点名。
-4. 自定义断网时间窗是可选的，并且由 `%LocalAppData%\Solock\hotspot_and_block.ini` 控制。
-5. 内置默认策略仍然写在 `SolockController::Options` 中，但运行时原始 SSID 状态和多个自定义断网窗口现在都放在同一个外部 INI 文件里。
-6. 如果程序未以足够权限运行，文档描述的部分系统级动作可能无法成功。
+2. 晚间热点逻辑只保留内置随机运营商风格别名，不再支持通过配置文件指定固定热点名。
+3. 自定义断网时间窗是可选的，并且由 `%LocalAppData%\Solock\hotspot_and_block.ini` 控制。
+4. 内置默认策略仍然写在 `SolockController::Options` 中，但运行时原始 SSID 状态和多个自定义断网窗口现在都放在同一个外部 INI 文件里。
+5. 如果程序未以足够权限运行，文档描述的部分系统级动作可能无法成功。
