@@ -6,7 +6,7 @@
 - 监听默认音频输出设备变化，并把系统音量拉回目标值
 - 维持 Windows 移动热点可用
 - 在指定时间段内对目标进程安装 WFP 出站拦截规则
-- 支持从本地配置文件追加一个自定义断网时间窗
+- 支持从本地配置文件追加多个自定义断网时间窗
 - 在午间空闲达到阈值时立即关机
 - 在晚间空闲达到阈值时锁屏并关闭显示器
 - 启动时为当前用户注册“登录后自动启动”的计划任务
@@ -54,7 +54,7 @@
 | --- | --- | --- |
 | `ScheduledBlocks` | 除午间和晚间外的其他时段 | 保持热点可用；按预设时间窗对目标进程断网；额外检查自定义断网时间窗；音量保持正常值 |
 | `MiddayIdleShutdown` | `12:10` - `12:50` | 保持热点可用；持续对目标进程断网；空闲达到阈值后立即关机；音量降到较低值 |
-| `EveningPostAction` | `17:40` 之后 | 持续对目标进程断网；将热点切换到配置文件指定名称或随机化晚间别名；空闲达到阈值后锁屏并关闭显示器；音量降到较低值 |
+| `EveningPostAction` | `17:40` 之后 | 持续对目标进程断网；将热点切换到随机化晚间别名；空闲达到阈值后锁屏并关闭显示器；音量降到较低值 |
 
 阶段判断优先级如下：
 
@@ -107,15 +107,20 @@
 
 ## 外部配置文件
 
-除了 `Options` 中的内置默认值，程序还会在运行时读取一个可选的本地配置文件：
+除了 `Options` 中的内置默认值，程序还会在运行时读取并维护一个本地 INI 文件：
 
 `%LocalAppData%\Solock\hotspot_and_block.ini`
 
 文件格式如下：
 
 ```ini
-[hotspot]
-evening_name=
+[state]
+original_hotspot_ssid=
+
+[custom_block]
+start=
+duration_minutes=
+repeat_count=
 
 [custom_block]
 start=
@@ -125,10 +130,10 @@ repeat_count=
 
 字段说明：
 
-- `[hotspot] evening_name`
-  晚间阶段的固定热点名称。填写后，晚间阶段会直接切到这个名称；留空时继续使用当前的随机运营商风格别名逻辑。
+- `[state] original_hotspot_ssid`
+  由程序维护的运行时状态，用于保存“晚间切换前的原始 SSID”，供白天阶段恢复。通常不需要手动编辑。
 - `[custom_block] start`
-  自定义断网时间窗的开始时刻，使用 24 小时制 `HH:MM`。
+  一个自定义断网时间窗的开始时刻，使用 24 小时制 `HH:MM`。
 - `[custom_block] duration_minutes`
   每一段断网窗口持续的分钟数，可选。
 - `[custom_block] repeat_count`
@@ -136,12 +141,13 @@ repeat_count=
 
 自定义断网时间窗的规则如下：
 
-1. `start` 是唯一必填项。
-2. 它是“当前进程生命周期内”的自定义窗口，不会按天自动重置；如需重新安排，可以修改配置文件或重启进程。
-3. 如果 `duration_minutes` 为空，则一旦本次进程运行到 `start`，目标进程会持续断网直到本次进程生命周期结束，或配置文件被修改后重新判定。
-4. 如果填写了 `duration_minutes`，但 `repeat_count` 为空，则只执行 1 段该持续时间的断网窗口。
-5. 如果同时填写了 `duration_minutes` 和 `repeat_count`，则总断网时长为 `duration_minutes * repeat_count`，这些窗口按连续段叠加。
-6. 如果只填写了 `repeat_count` 而没有填写 `duration_minutes`，`repeat_count` 不生效，行为仍等同于“从 `start` 断网到本次进程生命周期结束”。
+1. 可以写入若干个 `[custom_block]` section；程序会按出现顺序读取，并把它们视为并集。
+2. 每个 `[custom_block]` 的 `start` 是唯一必填项。
+3. 每个 `[custom_block]` 都是“当前进程生命周期内”的自定义窗口，不会按天自动重置；如需重新安排，可以修改配置文件或重启进程。
+4. 如果某个 `[custom_block]` 的 `duration_minutes` 为空，则一旦本次进程运行到它的 `start`，目标进程会持续断网直到本次进程生命周期结束，或配置文件被修改后重新判定。
+5. 如果填写了 `duration_minutes`，但 `repeat_count` 为空，则只执行 1 段该持续时间的断网窗口。
+6. 如果同时填写了 `duration_minutes` 和 `repeat_count`，则总断网时长为 `duration_minutes * repeat_count`，这些窗口按连续段叠加。
+7. 如果只填写了 `repeat_count` 而没有填写 `duration_minutes`，`repeat_count` 不生效，行为仍等同于“从 `start` 断网到本次进程生命周期结束”。
 
 程序会在心跳周期内重新读取该文件，因此你在程序运行中修改它，后续循环会自动使用新值。
 
@@ -174,12 +180,12 @@ repeat_count=
 
 ### 自定义断网时间窗
 
-在 `ScheduledBlocks` 阶段，程序还会额外检查 `%LocalAppData%\Solock\hotspot_and_block.ini` 中的 `[custom_block]` 配置。
+在 `ScheduledBlocks` 阶段，程序还会额外检查 `%LocalAppData%\Solock\hotspot_and_block.ini` 中全部 `[custom_block]` 配置。
 
 自定义断网时间窗与内置时间窗是“并集”关系：
 
 - 只要任意一个内置时间窗命中，就会断网
-- 只要自定义时间窗处于激活状态，也会断网
+- 只要任意一个自定义时间窗处于激活状态，也会断网
 
 在以下阶段中，目标进程会被持续断网，而不依赖内置窗口或自定义窗口：
 
@@ -215,18 +221,13 @@ WFP 规则依附于动态 session，程序会在以下时机清理：
 
 在普通阶段和午间阶段，程序执行“前置热点保障”：
 
-- 如果本地状态文件里记录过原始 SSID，并且当前 SSID 与之不同，则先尝试恢复原始 SSID
-- 如果当前 SSID 已经等于记录值，则清理状态文件
+- 如果本地 INI 的 `[state]` 里记录过原始 SSID，并且当前 SSID 与之不同，则先尝试恢复原始 SSID
+- 如果当前 SSID 已经等于记录值，则清理该状态项
 - 最终确保热点处于开启状态
 
 ### 晚间阶段
 
-晚间阶段的热点目标按以下优先级确定：
-
-1. 如果 `%LocalAppData%\Solock\hotspot_and_block.ini` 里填写了 `[hotspot] evening_name`，直接使用该名称。
-2. 否则，继续使用当前实现的随机运营商风格别名。
-
-随机别名逻辑会：
+晚间阶段始终使用随机运营商风格别名。随机别名逻辑会：
 
 1. 尽量保存“切换前的原始 SSID”。
 2. 以原始 SSID 为优先来源；如果拿不到，则退回当前 SSID；再不行才退回 `postActionSsid`。
@@ -252,12 +253,12 @@ WFP 规则依附于动态 session，程序会在以下时机清理：
 
 ### 状态文件
 
-程序会使用以下两个本地文件：
+程序现在只使用一个本地文件：
 
-- `%LocalAppData%\Solock\original_hotspot_ssid.txt`
-  保存“晚间切换前的原始 SSID”，用于白天恢复。
 - `%LocalAppData%\Solock\hotspot_and_block.ini`
-  可选的用户配置文件，用于指定晚间固定热点名称和自定义断网时间窗。
+  同时承载运行时状态和用户配置。其中 `[state] original_hotspot_ssid` 用于保存“晚间切换前的原始 SSID”，`[custom_block]` 用于定义一个或多个自定义断网时间窗。
+
+如果本地还残留旧版 `%LocalAppData%\Solock\original_hotspot_ssid.txt`，程序会在读取到它时自动迁移到 `hotspot_and_block.ini`。
 
 ## 音量控制
 
@@ -397,7 +398,7 @@ WFP 规则依附于动态 session，程序会在以下时机清理：
 
 1. Release 模式下会真实执行计划任务注册、热点控制、WFP 断网、关机、锁屏和灭屏。
 2. 当前 Debug 默认入口主要用于热点链路演练，不等同于完整调度模拟。
-3. 晚间热点逻辑现在支持两种模式：配置文件固定热点名，或内置随机运营商风格别名。
+3. 晚间热点逻辑只保留内置随机运营商风格别名，不再支持通过配置文件指定固定热点名。
 4. 自定义断网时间窗是可选的，并且由 `%LocalAppData%\Solock\hotspot_and_block.ini` 控制。
-5. 内置默认策略仍然写在 `SolockController::Options` 中，但热点名和自定义断网窗口现在支持通过外部文件覆盖。
+5. 内置默认策略仍然写在 `SolockController::Options` 中，但运行时原始 SSID 状态和多个自定义断网窗口现在都放在同一个外部 INI 文件里。
 6. 如果程序未以足够权限运行，文档描述的部分系统级动作可能无法成功。

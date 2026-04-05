@@ -64,6 +64,17 @@ public:
     int RunBlockedAppNetworkingDebug();
 
 private:
+    struct CustomBlockWindow
+    {
+        bool hasStart = false;
+        int startMinutesOfDay = 0;
+        bool hasCustomBlockDurationMinutes = false;
+        int customBlockDurationMinutes = 0;
+        bool hasCustomBlockRepeatCount = false;
+        int customBlockRepeatCount = 0;
+        std::wstring signature;
+    };
+
     struct ScheduleTimes
     {
         std::chrono::system_clock::time_point middayShutdownStartTime;
@@ -86,14 +97,14 @@ private:
 
     struct ExternalOverrides
     {
-        std::wstring eveningHotspotName;
-        bool hasCustomBlockStart = false;
-        int customBlockStartMinutesOfDay = 0;
-        bool hasCustomBlockDurationMinutes = false;
-        int customBlockDurationMinutes = 0;
-        bool hasCustomBlockRepeatCount = false;
-        int customBlockRepeatCount = 0;
+        std::vector<CustomBlockWindow> customBlocks;
         std::wstring signature;
+    };
+
+    struct CustomBlockRuntimeState
+    {
+        bool activated = false;
+        std::chrono::system_clock::time_point activationTime;
     };
 
     enum class Phase
@@ -107,8 +118,7 @@ private:
     bool m_eveningIdleLockApplied;
     std::wstring m_eveningHotspotAliasSource;
     std::wstring m_eveningHotspotAlias;
-    bool m_customBlockActivated;
-    std::chrono::system_clock::time_point m_customBlockActivationTime;
+    std::vector<CustomBlockRuntimeState> m_customBlockStates;
     std::wstring m_customBlockConfigSignature;
     HANDLE m_wfpEngine;
     bool m_blockedAppFiltersInstalled;
@@ -169,7 +179,7 @@ private:
     bool ShutdownMachineNow();
 
     static std::wstring GetStateDirectoryPath();
-    static std::wstring GetOriginalSsidStateFilePath();
+    static std::wstring GetLegacyOriginalSsidStateFilePath();
     static std::wstring GetHotspotAndBlockConfigFilePath();
     static bool EnsureStateDirectoryExists();
     static bool ClearOriginalSsid();

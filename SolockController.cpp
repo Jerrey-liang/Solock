@@ -52,6 +52,35 @@ namespace
     constexpr GUID kSolockWfpSublayerKey =
     { 0x618ab011, 0xcb31, 0x4b31, { 0x92, 0xfd, 0x86, 0x40, 0xe0, 0x25, 0x84, 0xfa } };
 
+    enum class TextEncoding
+    {
+        Utf8,
+        Utf8Bom,
+        Utf16Le,
+        Utf16Be,
+        Ansi
+    };
+
+    struct TextFileContent
+    {
+        bool exists = false;
+        TextEncoding encoding = TextEncoding::Utf8Bom;
+        std::wstring newline = L"\r\n";
+        std::wstring text;
+    };
+
+    struct RawCustomBlockConfig
+    {
+        std::wstring start;
+        std::wstring durationMinutes;
+        std::wstring repeatCount;
+
+        bool HasAnyValue() const
+        {
+            return !start.empty() || !durationMinutes.empty() || !repeatCount.empty();
+        }
+    };
+
     int ClampMinuteOfDay(const int hour, const int minute)
     {
         return std::clamp(hour * 60 + minute, 0, kMaxMinuteOfDay);
@@ -172,25 +201,520 @@ namespace
         return value.substr(start, end - start);
     }
 
-    std::wstring ReadIniValue(
-        const std::wstring& filePath,
-        const wchar_t* section,
-        const wchar_t* key)
+    bool EqualsIgnoreCase(const std::wstring& left, const std::wstring& right);
+
+    bool TryDecodeMultiByteString(
+        const std::string& input,
+        const UINT codePage,
+        const DWORD flags,
+        std::wstring& output)
     {
-        if (filePath.empty() || section == nullptr || key == nullptr)
+        output.clear();
+        if (input.empty())
         {
-            return L"";
+            return true;
         }
 
-        wchar_t buffer[1024] = {};
-        const DWORD len = ::GetPrivateProfileStringW(
-            section,
-            key,
-            L"",
-            buffer,
-            static_cast<DWORD>(_countof(buffer)),
-            filePath.c_str());
-        return TrimWhitespace(std::wstring(buffer, len));
+        const int needed = ::MultiByteToWideChar(
+            codePage,
+            flags,
+            input.data(),
+            static_cast<int>(input.size()),
+            nullptr,
+            0);
+        if (needed <= 0)
+        {
+            return false;
+        }
+
+        output.resize(static_cast<size_t>(needed));
+        const int written = ::MultiByteToWideChar(
+            codePage,
+            flags,
+            input.data(),
+            static_cast<int>(input.size()),
+            output.data(),
+            needed);
+        if (written != needed)
+        {
+            output.clear();
+            return false;
+        }
+
+        return true;
+    }
+
+    bool TryEncodeWideString(
+        const std::wstring& input,
+        const UINT codePage,
+        std::string& output)
+    {
+        output.clear();
+        if (input.empty())
+        {
+            return true;
+        }
+
+        const int needed = ::WideCharToMultiByte(
+            codePage,
+            0,
+            input.data(),
+            static_cast<int>(input.size()),
+            nullptr,
+            0,
+            nullptr,
+            nullptr);
+        if (needed <= 0)
+        {
+            return false;
+        }
+
+        output.resize(static_cast<size_t>(needed));
+        const int written = ::WideCharToMultiByte(
+            codePage,
+            0,
+            input.data(),
+            static_cast<int>(input.size()),
+            output.data(),
+            needed,
+            nullptr,
+            nullptr);
+        if (written != needed)
+        {
+            output.clear();
+            return false;
+        }
+
+        return true;
+    }
+
+    bool LoadTextFile(const std::wstring& path, TextFileContent& content)
+    {
+        content = {};
+        if (path.empty())
+        {
+            return false;
+        }
+
+        const DWORD attributes = ::GetFileAttributesW(path.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES)
+        {
+            const DWORD error = ::GetLastError();
+            if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+        {
+            return false;
+        }
+
+        std::ifstream input(path, std::ios::binary);
+        if (!input.is_open())
+        {
+            return false;
+        }
+
+        const std::string bytes(
+            (std::istreambuf_iterator<char>(input)),
+            std::istreambuf_iterator<char>());
+
+        content.exists = true;
+        if (bytes.empty())
+        {
+            return true;
+        }
+
+        if (bytes.size() >= 2 &&
+            static_cast<unsigned char>(bytes[0]) == 0xFF &&
+            static_cast<unsigned char>(bytes[1]) == 0xFE)
+        {
+            content.encoding = TextEncoding::Utf16Le;
+            content.text.reserve((bytes.size() - 2) / 2);
+            for (size_t i = 2; i + 1 < bytes.size(); i += 2)
+            {
+                const unsigned char low = static_cast<unsigned char>(bytes[i]);
+                const unsigned char high = static_cast<unsigned char>(bytes[i + 1]);
+                content.text.push_back(static_cast<wchar_t>(low | (high << 8)));
+            }
+        }
+        else if (
+            bytes.size() >= 2 &&
+            static_cast<unsigned char>(bytes[0]) == 0xFE &&
+            static_cast<unsigned char>(bytes[1]) == 0xFF)
+        {
+            content.encoding = TextEncoding::Utf16Be;
+            content.text.reserve((bytes.size() - 2) / 2);
+            for (size_t i = 2; i + 1 < bytes.size(); i += 2)
+            {
+                const unsigned char high = static_cast<unsigned char>(bytes[i]);
+                const unsigned char low = static_cast<unsigned char>(bytes[i + 1]);
+                content.text.push_back(static_cast<wchar_t>(low | (high << 8)));
+            }
+        }
+        else
+        {
+            std::string textBytes = bytes;
+            if (bytes.size() >= 3 &&
+                static_cast<unsigned char>(bytes[0]) == 0xEF &&
+                static_cast<unsigned char>(bytes[1]) == 0xBB &&
+                static_cast<unsigned char>(bytes[2]) == 0xBF)
+            {
+                content.encoding = TextEncoding::Utf8Bom;
+                textBytes.erase(0, 3);
+            }
+            else
+            {
+                content.encoding = TextEncoding::Utf8;
+            }
+
+            if (!TryDecodeMultiByteString(textBytes, CP_UTF8, MB_ERR_INVALID_CHARS, content.text))
+            {
+                content.encoding = TextEncoding::Ansi;
+                if (!TryDecodeMultiByteString(textBytes, CP_ACP, 0, content.text))
+                {
+                    return false;
+                }
+            }
+        }
+
+        if (content.text.find(L"\r\n") != std::wstring::npos)
+        {
+            content.newline = L"\r\n";
+        }
+        else if (content.text.find(L'\n') != std::wstring::npos)
+        {
+            content.newline = L"\n";
+        }
+
+        return true;
+    }
+
+    bool SaveTextFile(
+        const std::wstring& path,
+        const TextEncoding encoding,
+        const std::wstring& text)
+    {
+        if (path.empty())
+        {
+            return false;
+        }
+
+        std::string bytes;
+        switch (encoding)
+        {
+        case TextEncoding::Utf8Bom:
+        case TextEncoding::Utf8:
+        {
+            if (!TryEncodeWideString(text, CP_UTF8, bytes))
+            {
+                return false;
+            }
+
+            if (encoding == TextEncoding::Utf8Bom)
+            {
+                bytes.insert(bytes.begin(), { static_cast<char>(0xEF), static_cast<char>(0xBB), static_cast<char>(0xBF) });
+            }
+            break;
+        }
+        case TextEncoding::Utf16Le:
+        {
+            bytes.reserve(2 + text.size() * 2);
+            bytes.push_back(static_cast<char>(0xFF));
+            bytes.push_back(static_cast<char>(0xFE));
+            for (const wchar_t ch : text)
+            {
+                bytes.push_back(static_cast<char>(ch & 0xFF));
+                bytes.push_back(static_cast<char>((ch >> 8) & 0xFF));
+            }
+            break;
+        }
+        case TextEncoding::Utf16Be:
+        {
+            bytes.reserve(2 + text.size() * 2);
+            bytes.push_back(static_cast<char>(0xFE));
+            bytes.push_back(static_cast<char>(0xFF));
+            for (const wchar_t ch : text)
+            {
+                bytes.push_back(static_cast<char>((ch >> 8) & 0xFF));
+                bytes.push_back(static_cast<char>(ch & 0xFF));
+            }
+            break;
+        }
+        case TextEncoding::Ansi:
+        {
+            if (!TryEncodeWideString(text, CP_ACP, bytes))
+            {
+                return false;
+            }
+            break;
+        }
+        }
+
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        if (!output.is_open())
+        {
+            return false;
+        }
+
+        if (!bytes.empty())
+        {
+            output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        }
+
+        return output.good();
+    }
+
+    std::vector<std::wstring> SplitLines(const std::wstring& text)
+    {
+        std::vector<std::wstring> lines;
+        size_t start = 0;
+        while (start < text.size())
+        {
+            size_t end = text.find(L'\n', start);
+            if (end == std::wstring::npos)
+            {
+                end = text.size();
+            }
+
+            std::wstring line = text.substr(start, end - start);
+            if (!line.empty() && line.back() == L'\r')
+            {
+                line.pop_back();
+            }
+            lines.push_back(std::move(line));
+
+            if (end == text.size())
+            {
+                break;
+            }
+
+            start = end + 1;
+        }
+
+        return lines;
+    }
+
+    std::wstring JoinLines(
+        const std::vector<std::wstring>& lines,
+        const std::wstring& newline)
+    {
+        std::wstring joined;
+        for (size_t i = 0; i < lines.size(); ++i)
+        {
+            if (i > 0)
+            {
+                joined += newline;
+            }
+
+            joined += lines[i];
+        }
+
+        if (!joined.empty())
+        {
+            joined += newline;
+        }
+
+        return joined;
+    }
+
+    bool TryParseIniSectionHeader(
+        const std::wstring& line,
+        std::wstring& sectionName)
+    {
+        sectionName.clear();
+        const std::wstring trimmed = TrimWhitespace(line);
+        if (trimmed.size() < 3 || trimmed.front() != L'[' || trimmed.back() != L']')
+        {
+            return false;
+        }
+
+        sectionName = TrimWhitespace(trimmed.substr(1, trimmed.size() - 2));
+        return !sectionName.empty();
+    }
+
+    bool TryParseIniKeyValue(
+        const std::wstring& line,
+        std::wstring& key,
+        std::wstring& value)
+    {
+        key.clear();
+        value.clear();
+
+        const size_t separator = line.find(L'=');
+        if (separator == std::wstring::npos)
+        {
+            return false;
+        }
+
+        key = TrimWhitespace(line.substr(0, separator));
+        if (key.empty())
+        {
+            return false;
+        }
+
+        value = TrimWhitespace(line.substr(separator + 1));
+        return true;
+    }
+
+    bool TryReadIniValue(
+        const std::wstring& text,
+        const wchar_t* section,
+        const wchar_t* key,
+        std::wstring& value)
+    {
+        value.clear();
+        if (section == nullptr || key == nullptr)
+        {
+            return false;
+        }
+
+        std::wstring currentSection;
+        std::wistringstream input(text);
+        std::wstring line;
+        while (std::getline(input, line))
+        {
+            if (!line.empty() && line.back() == L'\r')
+            {
+                line.pop_back();
+            }
+
+            const std::wstring trimmed = TrimWhitespace(line);
+            if (trimmed.empty() || trimmed.front() == L';' || trimmed.front() == L'#')
+            {
+                continue;
+            }
+
+            std::wstring parsedSection;
+            if (TryParseIniSectionHeader(trimmed, parsedSection))
+            {
+                currentSection = parsedSection;
+                continue;
+            }
+
+            if (!EqualsIgnoreCase(currentSection, section))
+            {
+                continue;
+            }
+
+            std::wstring parsedKey;
+            std::wstring parsedValue;
+            if (TryParseIniKeyValue(line, parsedKey, parsedValue) &&
+                EqualsIgnoreCase(parsedKey, key))
+            {
+                value = parsedValue;
+                return !value.empty();
+            }
+        }
+
+        return false;
+    }
+
+    bool UpdateIniValue(
+        const std::wstring& path,
+        const wchar_t* section,
+        const wchar_t* key,
+        const std::wstring* value)
+    {
+        if (path.empty() || section == nullptr || key == nullptr)
+        {
+            return false;
+        }
+
+        TextFileContent content;
+        if (!LoadTextFile(path, content))
+        {
+            return false;
+        }
+
+        std::vector<std::wstring> lines = SplitLines(content.text);
+        bool sectionFound = false;
+        size_t sectionStart = 0;
+        size_t sectionEnd = lines.size();
+
+        for (size_t i = 0; i < lines.size(); ++i)
+        {
+            std::wstring parsedSection;
+            if (!TryParseIniSectionHeader(lines[i], parsedSection))
+            {
+                continue;
+            }
+
+            if (!sectionFound && EqualsIgnoreCase(parsedSection, section))
+            {
+                sectionFound = true;
+                sectionStart = i;
+                sectionEnd = lines.size();
+                continue;
+            }
+
+            if (sectionFound)
+            {
+                sectionEnd = i;
+                break;
+            }
+        }
+
+        std::vector<size_t> keyLines;
+        if (sectionFound)
+        {
+            for (size_t i = sectionStart + 1; i < sectionEnd; ++i)
+            {
+                std::wstring parsedKey;
+                std::wstring parsedValue;
+                if (TryParseIniKeyValue(lines[i], parsedKey, parsedValue) &&
+                    EqualsIgnoreCase(parsedKey, key))
+                {
+                    keyLines.push_back(i);
+                }
+            }
+        }
+
+        if (value != nullptr)
+        {
+            const std::wstring replacementLine = std::wstring(key) + L"=" + *value;
+            if (!keyLines.empty())
+            {
+                lines[keyLines.front()] = replacementLine;
+                for (size_t index = keyLines.size(); index > 1; --index)
+                {
+                    lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(keyLines[index - 1]));
+                }
+            }
+            else if (sectionFound)
+            {
+                lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(sectionEnd), replacementLine);
+            }
+            else
+            {
+                if (!lines.empty() && !TrimWhitespace(lines.back()).empty())
+                {
+                    lines.push_back(L"");
+                }
+
+                lines.push_back(std::wstring(L"[") + section + L"]");
+                lines.push_back(replacementLine);
+            }
+        }
+        else if (!keyLines.empty())
+        {
+            for (size_t index = keyLines.size(); index > 0; --index)
+            {
+                lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(keyLines[index - 1]));
+            }
+        }
+
+        if (!content.exists)
+        {
+            content.encoding = TextEncoding::Utf8Bom;
+            content.newline = L"\r\n";
+        }
+
+        return SaveTextFile(path, content.encoding, JoinLines(lines, content.newline));
     }
 
     bool TryParseStrictInt(const std::wstring& value, int& parsedValue)
@@ -626,8 +1150,7 @@ SolockController::SolockController(const Options& options)
       m_eveningIdleLockApplied(false),
       m_eveningHotspotAliasSource(),
       m_eveningHotspotAlias(),
-      m_customBlockActivated(false),
-      m_customBlockActivationTime(),
+      m_customBlockStates(),
       m_customBlockConfigSignature(),
       m_wfpEngine(nullptr),
       m_blockedAppFiltersInstalled(false),
@@ -1622,42 +2145,55 @@ bool SolockController::IsCustomBlockActiveAt(
     if (overrides.signature != m_customBlockConfigSignature)
     {
         m_customBlockConfigSignature = overrides.signature;
-        m_customBlockActivated = false;
-        m_customBlockActivationTime = std::chrono::system_clock::time_point();
+        m_customBlockStates.assign(overrides.customBlocks.size(), CustomBlockRuntimeState{});
+    }
+    else if (m_customBlockStates.size() != overrides.customBlocks.size())
+    {
+        m_customBlockStates.resize(overrides.customBlocks.size());
     }
 
-    if (!overrides.hasCustomBlockStart)
+    for (size_t index = 0; index < overrides.customBlocks.size(); ++index)
     {
-        return false;
-    }
-
-    if (!m_customBlockActivated)
-    {
-        const auto customBlockStart = LocalAtOnSameDay(
-            now,
-            overrides.customBlockStartMinutesOfDay / 60,
-            overrides.customBlockStartMinutesOfDay % 60,
-            0);
-        if (now < customBlockStart)
+        const CustomBlockWindow& block = overrides.customBlocks[index];
+        if (!block.hasStart)
         {
-            return false;
+            continue;
         }
 
-        m_customBlockActivated = true;
-        m_customBlockActivationTime = customBlockStart;
+        CustomBlockRuntimeState& state = m_customBlockStates[index];
+        if (!state.activated)
+        {
+            const auto customBlockStart = LocalAtOnSameDay(
+                now,
+                block.startMinutesOfDay / 60,
+                block.startMinutesOfDay % 60,
+                0);
+            if (now < customBlockStart)
+            {
+                continue;
+            }
+
+            state.activated = true;
+            state.activationTime = customBlockStart;
+        }
+
+        if (!block.hasCustomBlockDurationMinutes)
+        {
+            return true;
+        }
+
+        const int repeatCount = block.hasCustomBlockRepeatCount
+            ? std::max(1, block.customBlockRepeatCount)
+            : 1;
+        const auto totalDuration = std::chrono::minutes(
+            static_cast<std::chrono::minutes::rep>(block.customBlockDurationMinutes) * repeatCount);
+        if (now < state.activationTime + totalDuration)
+        {
+            return true;
+        }
     }
 
-    if (!overrides.hasCustomBlockDurationMinutes)
-    {
-        return true;
-    }
-
-    const int repeatCount = overrides.hasCustomBlockRepeatCount
-        ? std::max(1, overrides.customBlockRepeatCount)
-        : 1;
-    const auto totalDuration = std::chrono::minutes(
-        static_cast<std::chrono::minutes::rep>(overrides.customBlockDurationMinutes) * repeatCount);
-    return now < m_customBlockActivationTime + totalDuration;
+    return false;
 }
 
 void SolockController::CloseWfpEngine()
@@ -1685,7 +2221,6 @@ bool SolockController::EnsureEveningHotspotState()
     std::wstring desiredSsid;
     try
     {
-        const ExternalOverrides overrides = LoadExternalOverrides();
         auto manager = CreateTetheringManager();
         const auto currentConfig = manager.GetCurrentAccessPointConfiguration();
         const std::wstring currentSsid = ToWString(currentConfig.Ssid());
@@ -1698,23 +2233,15 @@ bool SolockController::EnsureEveningHotspotState()
             originalSsid = currentSsid;
         }
 
-        if (!overrides.eveningHotspotName.empty())
-        {
-            desiredSsid = overrides.eveningHotspotName;
-            DebugLog(L"[HOTSPOT] using configured evening hotspot name from hotspot_and_block.ini: " + desiredSsid);
-        }
-        else
-        {
-            const std::wstring aliasSource =
-                !originalSsid.empty()
-                    ? originalSsid
-                    : (!currentSsid.empty() ? currentSsid : m_options.postActionSsid);
-            desiredSsid = GetEveningHotspotAlias(aliasSource);
+        const std::wstring aliasSource =
+            !originalSsid.empty()
+                ? originalSsid
+                : (!currentSsid.empty() ? currentSsid : m_options.postActionSsid);
+        desiredSsid = GetEveningHotspotAlias(aliasSource);
 
-            DebugLog(L"[HOTSPOT] evening alias source SSID=" +
-                (aliasSource.empty() ? std::wstring(L"<empty>") : aliasSource) +
-                L", desired SSID=" + desiredSsid);
-        }
+        DebugLog(L"[HOTSPOT] evening alias source SSID=" +
+            (aliasSource.empty() ? std::wstring(L"<empty>") : aliasSource) +
+            L", desired SSID=" + desiredSsid);
     }
     catch (const std::exception& ex)
     {
@@ -1833,7 +2360,7 @@ std::wstring SolockController::GetStateDirectoryPath()
     return result;
 }
 
-std::wstring SolockController::GetOriginalSsidStateFilePath()
+std::wstring SolockController::GetLegacyOriginalSsidStateFilePath()
 {
     const std::wstring dir = GetStateDirectoryPath();
     if (dir.empty())
@@ -1873,19 +2400,30 @@ bool SolockController::EnsureStateDirectoryExists()
 
 bool SolockController::ClearOriginalSsid()
 {
-    const std::wstring path = GetOriginalSsidStateFilePath();
+    const std::wstring path = GetHotspotAndBlockConfigFilePath();
     if (path.empty())
     {
         return false;
     }
 
-    if (::DeleteFileW(path.c_str()) != FALSE)
+    bool updated = true;
+    TextFileContent content;
+    if (LoadTextFile(path, content) && content.exists)
     {
-        return true;
+        updated = UpdateIniValue(path, L"state", L"original_hotspot_ssid", nullptr);
     }
 
-    const DWORD error = ::GetLastError();
-    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+    const std::wstring legacyPath = GetLegacyOriginalSsidStateFilePath();
+    if (!legacyPath.empty() && ::DeleteFileW(legacyPath.c_str()) == FALSE)
+    {
+        const DWORD error = ::GetLastError();
+        if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+        {
+            updated = false;
+        }
+    }
+
+    return updated;
 }
 
 bool SolockController::SaveOriginalSsid(const std::wstring& ssid)
@@ -1900,19 +2438,23 @@ bool SolockController::SaveOriginalSsid(const std::wstring& ssid)
         return false;
     }
 
-    const std::wstring path = GetOriginalSsidStateFilePath();
+    const std::wstring path = GetHotspotAndBlockConfigFilePath();
     if (path.empty())
     {
         return false;
     }
 
-    std::wofstream out(path, std::ios::trunc);
-    if (!out.is_open())
+    if (!UpdateIniValue(path, L"state", L"original_hotspot_ssid", &ssid))
     {
         return false;
     }
 
-    out << ssid;
+    const std::wstring legacyPath = GetLegacyOriginalSsidStateFilePath();
+    if (!legacyPath.empty())
+    {
+        ::DeleteFileW(legacyPath.c_str());
+    }
+
     return true;
 }
 
@@ -1920,20 +2462,46 @@ bool SolockController::TryLoadOriginalSsid(std::wstring& ssid)
 {
     ssid.clear();
 
-    const std::wstring path = GetOriginalSsidStateFilePath();
-    if (path.empty())
+    const std::wstring path = GetHotspotAndBlockConfigFilePath();
+    if (!path.empty())
+    {
+        TextFileContent content;
+        if (LoadTextFile(path, content) &&
+            content.exists &&
+            TryReadIniValue(content.text, L"state", L"original_hotspot_ssid", ssid) &&
+            !ssid.empty())
+        {
+            return true;
+        }
+    }
+
+    const std::wstring legacyPath = GetLegacyOriginalSsidStateFilePath();
+    if (legacyPath.empty())
     {
         return false;
     }
 
-    std::wifstream in(path);
-    if (!in.is_open())
+    TextFileContent legacyContent;
+    if (!LoadTextFile(legacyPath, legacyContent) || !legacyContent.exists)
     {
         return false;
     }
 
-    std::getline(in, ssid);
-    return !ssid.empty();
+    const std::vector<std::wstring> lines = SplitLines(legacyContent.text);
+    if (lines.empty())
+    {
+        return false;
+    }
+
+    ssid = TrimWhitespace(lines.front());
+    if (ssid.empty())
+    {
+        return false;
+    }
+
+    SaveOriginalSsid(ssid);
+    ::DeleteFileW(legacyPath.c_str());
+    return true;
 }
 
 SolockController::ExternalOverrides SolockController::LoadExternalOverrides()
@@ -1945,38 +2513,119 @@ SolockController::ExternalOverrides SolockController::LoadExternalOverrides()
         return overrides;
     }
 
-    overrides.eveningHotspotName = ReadIniValue(path, L"hotspot", L"evening_name");
-
-    const std::wstring customBlockStart = ReadIniValue(path, L"custom_block", L"start");
-    const std::wstring customBlockDuration = ReadIniValue(path, L"custom_block", L"duration_minutes");
-    const std::wstring customBlockRepeatCount = ReadIniValue(path, L"custom_block", L"repeat_count");
-
-    int parsedStartMinutesOfDay = 0;
-    if (TryParseMinuteOfDay(customBlockStart, parsedStartMinutesOfDay))
+    TextFileContent content;
+    if (!LoadTextFile(path, content) || !content.exists)
     {
-        overrides.hasCustomBlockStart = true;
-        overrides.customBlockStartMinutesOfDay = parsedStartMinutesOfDay;
+        return overrides;
     }
 
-    int parsedDurationMinutes = 0;
-    if (TryParseStrictInt(customBlockDuration, parsedDurationMinutes) && parsedDurationMinutes > 0)
+    RawCustomBlockConfig rawBlock;
+    bool inCustomBlockSection = false;
+    auto finalizeCustomBlock = [&]()
     {
-        overrides.hasCustomBlockDurationMinutes = true;
-        overrides.customBlockDurationMinutes = parsedDurationMinutes;
+        if (!rawBlock.HasAnyValue())
+        {
+            return;
+        }
+
+        CustomBlockWindow block;
+        int parsedStartMinutesOfDay = 0;
+        if (TryParseMinuteOfDay(rawBlock.start, parsedStartMinutesOfDay))
+        {
+            block.hasStart = true;
+            block.startMinutesOfDay = parsedStartMinutesOfDay;
+        }
+
+        int parsedDurationMinutes = 0;
+        if (TryParseStrictInt(rawBlock.durationMinutes, parsedDurationMinutes) && parsedDurationMinutes > 0)
+        {
+            block.hasCustomBlockDurationMinutes = true;
+            block.customBlockDurationMinutes = parsedDurationMinutes;
+        }
+
+        int parsedRepeatCount = 0;
+        if (TryParseStrictInt(rawBlock.repeatCount, parsedRepeatCount) && parsedRepeatCount > 0)
+        {
+            block.hasCustomBlockRepeatCount = true;
+            block.customBlockRepeatCount = parsedRepeatCount;
+        }
+
+        block.signature =
+            L"start=" + rawBlock.start +
+            L"|duration=" + rawBlock.durationMinutes +
+            L"|repeat=" + rawBlock.repeatCount;
+
+        overrides.customBlocks.push_back(std::move(block));
+    };
+
+    std::wistringstream input(content.text);
+    std::wstring line;
+    while (std::getline(input, line))
+    {
+        if (!line.empty() && line.back() == L'\r')
+        {
+            line.pop_back();
+        }
+
+        const std::wstring trimmed = TrimWhitespace(line);
+        if (trimmed.empty() || trimmed.front() == L';' || trimmed.front() == L'#')
+        {
+            continue;
+        }
+
+        std::wstring sectionName;
+        if (TryParseIniSectionHeader(trimmed, sectionName))
+        {
+            if (inCustomBlockSection)
+            {
+                finalizeCustomBlock();
+                rawBlock = RawCustomBlockConfig{};
+            }
+
+            inCustomBlockSection = EqualsIgnoreCase(sectionName, L"custom_block");
+            continue;
+        }
+
+        if (!inCustomBlockSection)
+        {
+            continue;
+        }
+
+        std::wstring key;
+        std::wstring value;
+        if (!TryParseIniKeyValue(line, key, value))
+        {
+            continue;
+        }
+
+        if (EqualsIgnoreCase(key, L"start"))
+        {
+            rawBlock.start = value;
+        }
+        else if (EqualsIgnoreCase(key, L"duration_minutes"))
+        {
+            rawBlock.durationMinutes = value;
+        }
+        else if (EqualsIgnoreCase(key, L"repeat_count"))
+        {
+            rawBlock.repeatCount = value;
+        }
     }
 
-    int parsedRepeatCount = 0;
-    if (TryParseStrictInt(customBlockRepeatCount, parsedRepeatCount) && parsedRepeatCount > 0)
+    if (inCustomBlockSection)
     {
-        overrides.hasCustomBlockRepeatCount = true;
-        overrides.customBlockRepeatCount = parsedRepeatCount;
+        finalizeCustomBlock();
     }
 
-    overrides.signature =
-        L"hotspot=" + overrides.eveningHotspotName +
-        L"|start=" + customBlockStart +
-        L"|duration=" + customBlockDuration +
-        L"|repeat=" + customBlockRepeatCount;
+    for (const auto& block : overrides.customBlocks)
+    {
+        if (!overrides.signature.empty())
+        {
+            overrides.signature += L"||";
+        }
+
+        overrides.signature += block.signature;
+    }
 
     return overrides;
 }
