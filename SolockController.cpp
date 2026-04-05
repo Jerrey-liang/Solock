@@ -180,30 +180,62 @@ std::chrono::system_clock::time_point SolockController::LocalAtOnSameDay(
 }
 
 SolockController::ScheduleTimes SolockController::GetScheduleTimesFor(
-    const std::chrono::system_clock::time_point& now) const
+    const std::chrono::system_clock::time_point& now,
+    const ExternalOverrides& overrides) const
 {
-    const int middayStartMinuteOfDay =
-        ClampMinuteOfDay(m_options.middayShutdownStartHour, m_options.middayShutdownStartMinute);
-    const int middayEndMinuteOfDay =
-        ClampMinuteOfDay(m_options.middayShutdownEndHour, m_options.middayShutdownEndMinute);
-    const int eveningStartMinuteOfDay =
-        ClampMinuteOfDay(m_options.eveningPostActionStartHour, m_options.eveningPostActionStartMinute);
+    const int middayStartMinuteOfDay = overrides.hasMiddayShutdownStartMinutesOfDay
+        ? ClampMinuteOfDay(
+            overrides.middayShutdownStartMinutesOfDay / 60,
+            overrides.middayShutdownStartMinutesOfDay % 60)
+        : ClampMinuteOfDay(m_options.middayShutdownStartHour, m_options.middayShutdownStartMinute);
+    const int middayEndMinuteOfDay = overrides.hasMiddayShutdownEndMinutesOfDay
+        ? ClampMinuteOfDay(
+            overrides.middayShutdownEndMinutesOfDay / 60,
+            overrides.middayShutdownEndMinutesOfDay % 60)
+        : ClampMinuteOfDay(m_options.middayShutdownEndHour, m_options.middayShutdownEndMinute);
+    const int eveningHotspotStartMinuteOfDay = overrides.hasEveningHotspotStartMinutesOfDay
+        ? ClampMinuteOfDay(
+            overrides.eveningHotspotStartMinutesOfDay / 60,
+            overrides.eveningHotspotStartMinutesOfDay % 60)
+        : ClampMinuteOfDay(m_options.eveningPostActionStartHour, m_options.eveningPostActionStartMinute);
+    const int eveningIdleShutdownStartMinuteOfDay = overrides.hasEveningIdleShutdownStartMinutesOfDay
+        ? ClampMinuteOfDay(
+            overrides.eveningIdleShutdownStartMinutesOfDay / 60,
+            overrides.eveningIdleShutdownStartMinutesOfDay % 60)
+        : ClampMinuteOfDay(m_options.eveningIdleShutdownStartHour, m_options.eveningIdleShutdownStartMinute);
 
     return
     {
         LocalAtOnSameDay(now, middayStartMinuteOfDay / 60, middayStartMinuteOfDay % 60, 0),
         LocalAtOnSameDay(now, middayEndMinuteOfDay / 60, middayEndMinuteOfDay % 60, 0),
-        LocalAtOnSameDay(now, eveningStartMinuteOfDay / 60, eveningStartMinuteOfDay % 60, 0)
+        LocalAtOnSameDay(now, eveningHotspotStartMinuteOfDay / 60, eveningHotspotStartMinuteOfDay % 60, 0),
+        LocalAtOnSameDay(now, eveningIdleShutdownStartMinuteOfDay / 60, eveningIdleShutdownStartMinuteOfDay % 60, 0)
     };
+}
+
+bool SolockController::IsEveningHotspotEnabled(const ExternalOverrides& overrides)
+{
+    return !overrides.hasEveningHotspotEnabled || overrides.eveningHotspotEnabled;
 }
 
 SolockController::Phase SolockController::GetPhaseAt(
     const std::chrono::system_clock::time_point& now,
-    const ScheduleTimes& scheduleTimes)
+    const ScheduleTimes& scheduleTimes,
+    const ExternalOverrides& overrides)
 {
-    if (now >= scheduleTimes.eveningPostActionStartTime)
+    if (IsEveningHotspotEnabled(overrides))
     {
-        return Phase::EveningPostAction;
+        if (now >= scheduleTimes.eveningPostActionStartTime)
+        {
+            return Phase::EveningPostAction;
+        }
+    }
+    else
+    {
+        if (now >= scheduleTimes.eveningIdleShutdownStartTime)
+        {
+            return Phase::EveningIdleShutdown;
+        }
     }
 
     if (now >= scheduleTimes.middayShutdownStartTime &&
@@ -217,12 +249,28 @@ SolockController::Phase SolockController::GetPhaseAt(
 
 int SolockController::RunWithSchedule()
 {
-    const int middayStartMinuteOfDay =
-        ClampMinuteOfDay(m_options.middayShutdownStartHour, m_options.middayShutdownStartMinute);
-    const int middayEndMinuteOfDay =
-        ClampMinuteOfDay(m_options.middayShutdownEndHour, m_options.middayShutdownEndMinute);
-    const int eveningStartMinuteOfDay =
-        ClampMinuteOfDay(m_options.eveningPostActionStartHour, m_options.eveningPostActionStartMinute);
+    const ExternalOverrides initialOverrides = LoadExternalOverrides();
+    const int middayStartMinuteOfDay = initialOverrides.hasMiddayShutdownStartMinutesOfDay
+        ? ClampMinuteOfDay(
+            initialOverrides.middayShutdownStartMinutesOfDay / 60,
+            initialOverrides.middayShutdownStartMinutesOfDay % 60)
+        : ClampMinuteOfDay(m_options.middayShutdownStartHour, m_options.middayShutdownStartMinute);
+    const int middayEndMinuteOfDay = initialOverrides.hasMiddayShutdownEndMinutesOfDay
+        ? ClampMinuteOfDay(
+            initialOverrides.middayShutdownEndMinutesOfDay / 60,
+            initialOverrides.middayShutdownEndMinutesOfDay % 60)
+        : ClampMinuteOfDay(m_options.middayShutdownEndHour, m_options.middayShutdownEndMinute);
+    const int eveningStartMinuteOfDay = IsEveningHotspotEnabled(initialOverrides)
+        ? (initialOverrides.hasEveningHotspotStartMinutesOfDay
+            ? ClampMinuteOfDay(
+                initialOverrides.eveningHotspotStartMinutesOfDay / 60,
+                initialOverrides.eveningHotspotStartMinutesOfDay % 60)
+            : ClampMinuteOfDay(m_options.eveningPostActionStartHour, m_options.eveningPostActionStartMinute))
+        : (initialOverrides.hasEveningIdleShutdownStartMinutesOfDay
+            ? ClampMinuteOfDay(
+                initialOverrides.eveningIdleShutdownStartMinutesOfDay / 60,
+                initialOverrides.eveningIdleShutdownStartMinutesOfDay % 60)
+            : ClampMinuteOfDay(m_options.eveningIdleShutdownStartHour, m_options.eveningIdleShutdownStartMinute));
     if (middayEndMinuteOfDay < middayStartMinuteOfDay ||
         eveningStartMinuteOfDay < middayEndMinuteOfDay)
     {
@@ -235,7 +283,7 @@ int SolockController::RunWithSchedule()
     }
 
     const auto now = std::chrono::system_clock::now();
-    const auto initialPhase = GetPhaseAt(now, GetScheduleTimesFor(now));
+    const auto initialPhase = GetPhaseAt(now, GetScheduleTimesFor(now, initialOverrides), initialOverrides);
 
     AssertKeepSystemAwake();
     EnsureAudioVolumeMatchesPhase(initialPhase);
@@ -251,7 +299,7 @@ int SolockController::RunWithSchedule()
             EnsureTargetAppsNetworkingMatchesSchedule(now);
             WaitForSystemAndNetworkStability();
         }
-        else if (initialPhase == Phase::MiddayIdleShutdown)
+        else if (initialPhase == Phase::MiddayIdleShutdown || initialPhase == Phase::EveningIdleShutdown)
         {
             EnsureTargetAppsNetworkingBlocked();
         }
@@ -264,8 +312,9 @@ int SolockController::RunWithSchedule()
     while (true)
     {
         const auto currentNow = std::chrono::system_clock::now();
-        const auto scheduleTimes = GetScheduleTimesFor(currentNow);
-        const auto phase = GetPhaseAt(currentNow, scheduleTimes);
+        const ExternalOverrides overrides = LoadExternalOverrides();
+        const auto scheduleTimes = GetScheduleTimesFor(currentNow, overrides);
+        const auto phase = GetPhaseAt(currentNow, scheduleTimes, overrides);
 
         AssertKeepSystemAwake();
         EnsureAudioVolumeMatchesPhase(phase);
@@ -284,6 +333,7 @@ int SolockController::RunWithSchedule()
             break;
 
         case Phase::MiddayIdleShutdown:
+        case Phase::EveningIdleShutdown:
             EnsurePreActionHotspot();
             EnsureTargetAppsNetworkingBlocked();
             if (IsInputIdleForAtLeast(idleThreshold))

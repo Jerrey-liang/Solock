@@ -14,7 +14,8 @@ namespace
 {
     using solock::internal::EqualsIgnoreCase;
 
-    constexpr wchar_t kHotspotAndBlockConfigFileName[] = L"hotspot_and_block.ini";
+    constexpr wchar_t kConfigFileName[] = L"config.cfg";
+    constexpr wchar_t kLegacyHotspotAndBlockConfigFileName[] = L"hotspot_and_block.ini";
 
     enum class TextEncoding
     {
@@ -37,13 +38,85 @@ namespace
     {
         std::wstring start;
         std::wstring durationMinutes;
+        std::wstring intervalMinutes;
         std::wstring repeatCount;
 
         bool HasAnyValue() const
         {
-            return !start.empty() || !durationMinutes.empty() || !repeatCount.empty();
+            return !start.empty() || !durationMinutes.empty() || !intervalMinutes.empty() || !repeatCount.empty();
         }
     };
+
+    bool FileExists(const std::wstring& path)
+    {
+        if (path.empty())
+        {
+            return false;
+        }
+
+        const DWORD attributes = ::GetFileAttributesW(path.c_str());
+        return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+    }
+
+    std::wstring BuildFilePath(const std::wstring& dir, const wchar_t* fileName)
+    {
+        if (dir.empty() || fileName == nullptr || *fileName == L'\0')
+        {
+            return L"";
+        }
+
+        return dir + L"\\" + fileName;
+    }
+
+    bool EnsurePreferredConfigFileAvailable(
+        const std::wstring& preferredPath,
+        const std::wstring& legacyPath)
+    {
+        if (preferredPath.empty())
+        {
+            return false;
+        }
+
+        if (FileExists(preferredPath))
+        {
+            return true;
+        }
+
+        if (legacyPath.empty() || !FileExists(legacyPath))
+        {
+            return true;
+        }
+
+        if (::CopyFileW(legacyPath.c_str(), preferredPath.c_str(), TRUE) == FALSE)
+        {
+            return false;
+        }
+
+        ::DeleteFileW(legacyPath.c_str());
+        return true;
+    }
+
+    std::wstring ResolveConfigFilePathForRead(
+        const std::wstring& preferredPath,
+        const std::wstring& legacyPath)
+    {
+        if (EnsurePreferredConfigFileAvailable(preferredPath, legacyPath) && FileExists(preferredPath))
+        {
+            return preferredPath;
+        }
+
+        if (FileExists(preferredPath))
+        {
+            return preferredPath;
+        }
+
+        if (FileExists(legacyPath))
+        {
+            return legacyPath;
+        }
+
+        return preferredPath;
+    }
 
     std::wstring TrimWhitespace(const std::wstring& value)
     {
@@ -616,6 +689,35 @@ namespace
         return true;
     }
 
+    bool TryParseStrictBool(const std::wstring& value, bool& parsedValue)
+    {
+        const std::wstring trimmed = TrimWhitespace(value);
+        if (trimmed.empty())
+        {
+            return false;
+        }
+
+        if (EqualsIgnoreCase(trimmed, L"1") ||
+            EqualsIgnoreCase(trimmed, L"true") ||
+            EqualsIgnoreCase(trimmed, L"yes") ||
+            EqualsIgnoreCase(trimmed, L"on"))
+        {
+            parsedValue = true;
+            return true;
+        }
+
+        if (EqualsIgnoreCase(trimmed, L"0") ||
+            EqualsIgnoreCase(trimmed, L"false") ||
+            EqualsIgnoreCase(trimmed, L"no") ||
+            EqualsIgnoreCase(trimmed, L"off"))
+        {
+            parsedValue = false;
+            return true;
+        }
+
+        return false;
+    }
+
     bool TryParseMinuteOfDay(const std::wstring& value, int& minuteOfDay)
     {
         const std::wstring trimmed = TrimWhitespace(value);
@@ -669,7 +771,7 @@ std::wstring SolockController::GetLegacyOriginalSsidStateFilePath()
     return dir + L"\\original_hotspot_ssid.txt";
 }
 
-std::wstring SolockController::GetHotspotAndBlockConfigFilePath()
+std::wstring SolockController::GetConfigFilePath()
 {
     const std::wstring dir = GetStateDirectoryPath();
     if (dir.empty())
@@ -677,7 +779,7 @@ std::wstring SolockController::GetHotspotAndBlockConfigFilePath()
         return L"";
     }
 
-    return dir + L"\\" + kHotspotAndBlockConfigFileName;
+    return BuildFilePath(dir, kConfigFileName);
 }
 
 bool SolockController::EnsureStateDirectoryExists()
@@ -698,8 +800,15 @@ bool SolockController::EnsureStateDirectoryExists()
 
 bool SolockController::ClearOriginalSsid()
 {
-    const std::wstring path = GetHotspotAndBlockConfigFilePath();
+    const std::wstring dir = GetStateDirectoryPath();
+    const std::wstring path = BuildFilePath(dir, kConfigFileName);
+    const std::wstring legacyPath = BuildFilePath(dir, kLegacyHotspotAndBlockConfigFileName);
     if (path.empty())
+    {
+        return false;
+    }
+
+    if (!EnsurePreferredConfigFileAvailable(path, legacyPath))
     {
         return false;
     }
@@ -711,8 +820,8 @@ bool SolockController::ClearOriginalSsid()
         updated = UpdateIniValue(path, L"state", L"original_hotspot_ssid", nullptr);
     }
 
-    const std::wstring legacyPath = GetLegacyOriginalSsidStateFilePath();
-    if (!legacyPath.empty() && ::DeleteFileW(legacyPath.c_str()) == FALSE)
+    const std::wstring legacyStatePath = GetLegacyOriginalSsidStateFilePath();
+    if (!legacyStatePath.empty() && ::DeleteFileW(legacyStatePath.c_str()) == FALSE)
     {
         const DWORD error = ::GetLastError();
         if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
@@ -736,8 +845,15 @@ bool SolockController::SaveOriginalSsid(const std::wstring& ssid)
         return false;
     }
 
-    const std::wstring path = GetHotspotAndBlockConfigFilePath();
+    const std::wstring dir = GetStateDirectoryPath();
+    const std::wstring path = BuildFilePath(dir, kConfigFileName);
+    const std::wstring legacyPath = BuildFilePath(dir, kLegacyHotspotAndBlockConfigFileName);
     if (path.empty())
+    {
+        return false;
+    }
+
+    if (!EnsurePreferredConfigFileAvailable(path, legacyPath))
     {
         return false;
     }
@@ -747,10 +863,10 @@ bool SolockController::SaveOriginalSsid(const std::wstring& ssid)
         return false;
     }
 
-    const std::wstring legacyPath = GetLegacyOriginalSsidStateFilePath();
-    if (!legacyPath.empty())
+    const std::wstring legacyStatePath = GetLegacyOriginalSsidStateFilePath();
+    if (!legacyStatePath.empty())
     {
-        ::DeleteFileW(legacyPath.c_str());
+        ::DeleteFileW(legacyStatePath.c_str());
     }
 
     return true;
@@ -760,11 +876,14 @@ bool SolockController::TryLoadOriginalSsid(std::wstring& ssid)
 {
     ssid.clear();
 
-    const std::wstring path = GetHotspotAndBlockConfigFilePath();
-    if (!path.empty())
+    const std::wstring dir = GetStateDirectoryPath();
+    const std::wstring path = BuildFilePath(dir, kConfigFileName);
+    const std::wstring legacyPath = BuildFilePath(dir, kLegacyHotspotAndBlockConfigFileName);
+    const std::wstring readPath = ResolveConfigFilePathForRead(path, legacyPath);
+    if (!readPath.empty())
     {
         TextFileContent content;
-        if (LoadTextFile(path, content) &&
+        if (LoadTextFile(readPath, content) &&
             content.exists &&
             TryReadIniValue(content.text, L"state", L"original_hotspot_ssid", ssid) &&
             !ssid.empty())
@@ -773,14 +892,14 @@ bool SolockController::TryLoadOriginalSsid(std::wstring& ssid)
         }
     }
 
-    const std::wstring legacyPath = GetLegacyOriginalSsidStateFilePath();
-    if (legacyPath.empty())
+    const std::wstring legacyStatePath = GetLegacyOriginalSsidStateFilePath();
+    if (legacyStatePath.empty())
     {
         return false;
     }
 
     TextFileContent legacyContent;
-    if (!LoadTextFile(legacyPath, legacyContent) || !legacyContent.exists)
+    if (!LoadTextFile(legacyStatePath, legacyContent) || !legacyContent.exists)
     {
         return false;
     }
@@ -798,21 +917,24 @@ bool SolockController::TryLoadOriginalSsid(std::wstring& ssid)
     }
 
     SaveOriginalSsid(ssid);
-    ::DeleteFileW(legacyPath.c_str());
+    ::DeleteFileW(legacyStatePath.c_str());
     return true;
 }
 
 SolockController::ExternalOverrides SolockController::LoadExternalOverrides()
 {
     ExternalOverrides overrides;
-    const std::wstring path = GetHotspotAndBlockConfigFilePath();
-    if (path.empty())
+    const std::wstring dir = GetStateDirectoryPath();
+    const std::wstring path = BuildFilePath(dir, kConfigFileName);
+    const std::wstring legacyPath = BuildFilePath(dir, kLegacyHotspotAndBlockConfigFileName);
+    const std::wstring readPath = ResolveConfigFilePathForRead(path, legacyPath);
+    if (readPath.empty())
     {
         return overrides;
     }
 
     TextFileContent content;
-    if (!LoadTextFile(path, content) || !content.exists)
+    if (!LoadTextFile(readPath, content) || !content.exists)
     {
         return overrides;
     }
@@ -842,6 +964,13 @@ SolockController::ExternalOverrides SolockController::LoadExternalOverrides()
             block.customBlockDurationMinutes = parsedDurationMinutes;
         }
 
+        int parsedIntervalMinutes = 0;
+        if (TryParseStrictInt(rawBlock.intervalMinutes, parsedIntervalMinutes) && parsedIntervalMinutes > 0)
+        {
+            block.hasCustomBlockIntervalMinutes = true;
+            block.customBlockIntervalMinutes = parsedIntervalMinutes;
+        }
+
         int parsedRepeatCount = 0;
         if (TryParseStrictInt(rawBlock.repeatCount, parsedRepeatCount) && parsedRepeatCount > 0)
         {
@@ -852,6 +981,7 @@ SolockController::ExternalOverrides SolockController::LoadExternalOverrides()
         block.signature =
             L"start=" + rawBlock.start +
             L"|duration=" + rawBlock.durationMinutes +
+            L"|interval=" + rawBlock.intervalMinutes +
             L"|repeat=" + rawBlock.repeatCount;
 
         overrides.customBlocks.push_back(std::move(block));
@@ -903,9 +1033,48 @@ SolockController::ExternalOverrides SolockController::LoadExternalOverrides()
             {
                 rawBlock.durationMinutes = value;
             }
+            else if (EqualsIgnoreCase(key, L"interval_minutes"))
+            {
+                rawBlock.intervalMinutes = value;
+            }
             else if (EqualsIgnoreCase(key, L"repeat_count"))
             {
                 rawBlock.repeatCount = value;
+            }
+        }
+        else if (EqualsIgnoreCase(currentSection, L"schedule"))
+        {
+            int parsedMinuteOfDay = 0;
+            bool parsedFlag = false;
+            if (EqualsIgnoreCase(key, L"midday_shutdown_start") &&
+                TryParseMinuteOfDay(value, parsedMinuteOfDay))
+            {
+                overrides.hasMiddayShutdownStartMinutesOfDay = true;
+                overrides.middayShutdownStartMinutesOfDay = parsedMinuteOfDay;
+            }
+            else if (EqualsIgnoreCase(key, L"midday_shutdown_end") &&
+                TryParseMinuteOfDay(value, parsedMinuteOfDay))
+            {
+                overrides.hasMiddayShutdownEndMinutesOfDay = true;
+                overrides.middayShutdownEndMinutesOfDay = parsedMinuteOfDay;
+            }
+            else if (EqualsIgnoreCase(key, L"enable_evening_hotspot") &&
+                TryParseStrictBool(value, parsedFlag))
+            {
+                overrides.hasEveningHotspotEnabled = true;
+                overrides.eveningHotspotEnabled = parsedFlag;
+            }
+            else if (EqualsIgnoreCase(key, L"evening_hotspot_start") &&
+                TryParseMinuteOfDay(value, parsedMinuteOfDay))
+            {
+                overrides.hasEveningHotspotStartMinutesOfDay = true;
+                overrides.eveningHotspotStartMinutesOfDay = parsedMinuteOfDay;
+            }
+            else if (EqualsIgnoreCase(key, L"evening_shutdown_start") &&
+                TryParseMinuteOfDay(value, parsedMinuteOfDay))
+            {
+                overrides.hasEveningIdleShutdownStartMinutesOfDay = true;
+                overrides.eveningIdleShutdownStartMinutesOfDay = parsedMinuteOfDay;
             }
         }
         else if (EqualsIgnoreCase(currentSection, L"volume"))

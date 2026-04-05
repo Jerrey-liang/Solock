@@ -11,9 +11,9 @@
 - 监听默认音频输出设备变化，并把系统音量拉回目标值
 - 维持 Windows 移动热点可用
 - 在指定时间段内对目标进程安装 WFP 出站拦截规则
-- 支持从本地配置文件追加多个自定义断网时间窗和音量覆盖
+- 支持从本地配置文件覆盖调度、晚间热点开关、多个自定义断网时间窗和音量
 - 在午间空闲达到阈值时立即关机
-- 在晚间空闲达到阈值时锁屏并关闭显示器
+- 在晚间可按配置选择“空闲锁屏并关闭显示器”或“空闲立即关机”
 - 启动时为当前用户注册“登录后自动启动”的计划任务
 
 ## 功能概览
@@ -32,23 +32,25 @@
 
 ## 时间阶段
 
-程序将一天划分为三个阶段：
+程序有四种运行阶段，其中两种晚间阶段会根据 `enable_evening_hotspot` 二选一：
 
 | 阶段 | 默认时间 | 行为 |
 | --- | --- | --- |
 | `ScheduledBlocks` | 除午间和晚间外的其他时段 | 保持热点可用；按预设时间窗对目标进程断网；额外检查自定义断网时间窗；音量保持正常值 |
 | `MiddayIdleShutdown` | `12:10` - `12:50` | 保持热点可用；持续对目标进程断网；空闲达到阈值后立即关机；音量降到较低值 |
-| `EveningPostAction` | `17:40` 之后 | 持续对目标进程断网；将热点切换到随机化晚间别名；空闲达到阈值后锁屏并关闭显示器；锁屏未回到桌面期间静音，解锁回到桌面后恢复晚间目标音量 |
+| `EveningIdleShutdown` | `17:50` 之后，且 `enable_evening_hotspot=false` | 行为与午间空闲关机相同：保持热点可用；持续对目标进程断网；空闲达到阈值后立即关机；音量降到较低值 |
+| `EveningPostAction` | `17:40` 之后，且 `enable_evening_hotspot=true` | 持续对目标进程断网；将热点切换到随机化晚间别名；空闲达到阈值后锁屏并关闭显示器；锁屏未回到桌面期间静音，解锁回到桌面后恢复晚间目标音量 |
 
 阶段判断优先级如下：
 
-1. 当前时间大于等于晚间开始时间时，进入 `EveningPostAction`。
-2. 否则，如果当前时间位于午间窗口内，进入 `MiddayIdleShutdown`。
-3. 其余时间进入 `ScheduledBlocks`。
+1. 如果 `enable_evening_hotspot=true` 且当前时间大于等于晚间热点开始时间，进入 `EveningPostAction`。
+2. 如果 `enable_evening_hotspot=false` 且当前时间大于等于晚间空闲关机开始时间，进入 `EveningIdleShutdown`。
+3. 否则，如果当前时间位于午间窗口内，进入 `MiddayIdleShutdown`。
+4. 其余时间进入 `ScheduledBlocks`。
 
 ## 默认配置
 
-默认值定义在 `SolockController::Options` 中。
+默认值定义在 `SolockController::Options` 中；`%LocalAppData%\\Solock\\config.cfg` 还可以在运行时覆盖其中一部分调度和行为。
 
 ### 调度与节奏
 
@@ -61,6 +63,7 @@
 | `middayShutdownStartHour:Minute` | `12:10` | 午间空闲关机窗口开始时间 |
 | `middayShutdownEndHour:Minute` | `12:50` | 午间空闲关机窗口结束时间 |
 | `eveningPostActionStartHour:Minute` | `17:40` | 晚间后置阶段开始时间 |
+| `eveningIdleShutdownStartHour:Minute` | `17:50` | 晚间热点关闭时的空闲关机开始时间 |
 | `inactivityThresholdMinutes` | `10` | 判定空闲的阈值 |
 | `heartbeatSeconds` | `15` | 主循环心跳周期 |
 
@@ -87,15 +90,22 @@
 
 ## 外部配置文件
 
-除了 `Options` 中的内置默认值，程序还会在运行时读取并维护一个本地 INI 文件：
+除了 `Options` 中的内置默认值，程序还会在运行时读取并维护一个本地 INI 风格配置文件：
 
-`%LocalAppData%\Solock\hotspot_and_block.ini`
+`%LocalAppData%\Solock\config.cfg`
 
 文件格式如下：
 
 ```ini
 [state]
 original_hotspot_ssid=
+
+[schedule]
+enable_evening_hotspot=
+midday_shutdown_start=
+midday_shutdown_end=
+evening_hotspot_start=
+evening_shutdown_start=
 
 [volume]
 normal_percent=
@@ -104,11 +114,13 @@ reduced_percent=
 [custom_block]
 start=
 duration_minutes=
+interval_minutes=
 repeat_count=
 
 [custom_block]
 start=
 duration_minutes=
+interval_minutes=
 repeat_count=
 ```
 
@@ -118,40 +130,62 @@ repeat_count=
 [state]
 original_hotspot_ssid=
 
+[schedule]
+enable_evening_hotspot=false
+midday_shutdown_start=12:10
+midday_shutdown_end=12:50
+evening_shutdown_start=17:50
+
 [volume]
 normal_percent=55
 reduced_percent=20
 
 [custom_block]
 start=19:30
-duration_minutes=45
-repeat_count=1
+duration_minutes=15
+interval_minutes=10
+repeat_count=3
 ```
 
 字段说明：
 
 - `[state] original_hotspot_ssid`
   由程序维护的运行时状态，用于保存“晚间切换前的原始 SSID”，供白天阶段恢复。通常不需要手动编辑。
+- `[schedule] enable_evening_hotspot`
+  可选。是否启用晚间热点模式。默认 `true`。为 `false` 时，晚间阶段不再切热点别名，也不再执行锁屏灭屏，而是改为“持续断网 + 空闲关机”。
+- `[schedule] midday_shutdown_start`
+  可选。午间空闲关机窗口开始时刻，使用 24 小时制 `HH:MM`。
+- `[schedule] midday_shutdown_end`
+  可选。午间空闲关机窗口结束时刻，使用 24 小时制 `HH:MM`。
+- `[schedule] evening_hotspot_start`
+  可选。开启晚间热点模式时，`EveningPostAction` 的开始时刻，使用 24 小时制 `HH:MM`。
+- `[schedule] evening_shutdown_start`
+  可选。关闭晚间热点模式时，`EveningIdleShutdown` 的开始时刻，使用 24 小时制 `HH:MM`。默认 `17:50`。
 - `[volume] normal_percent`
   可选。覆盖 `ScheduledBlocks` 阶段的目标音量百分比，范围会被限制到 `0` - `100`。
 - `[volume] reduced_percent`
-  可选。覆盖 `MiddayIdleShutdown` 和 `EveningPostAction` 阶段的目标音量百分比，范围会被限制到 `0` - `100`。
+  可选。覆盖 `MiddayIdleShutdown`、`EveningIdleShutdown` 和 `EveningPostAction` 阶段的目标音量百分比，范围会被限制到 `0` - `100`。
 - `[custom_block] start`
   一个自定义断网时间窗的开始时刻，使用 24 小时制 `HH:MM`。
 - `[custom_block] duration_minutes`
   每一段断网窗口持续的分钟数，可选。
+- `[custom_block] interval_minutes`
+  本次断网操作执行完毕后，到下一次断网开始前的间隔分钟数，可选。留空时默认视为 `0`，也就是下一段紧接着上一段结束后立即开始。
 - `[custom_block] repeat_count`
-  连续叠加几段相同持续时间的断网窗口，可选。
+  总共执行几段相同持续时间的断网窗口，可选。
 
 自定义断网时间窗的规则如下：
 
-1. 可以写入若干个 `[custom_block]` section；程序会按出现顺序读取，并把它们视为并集。
-2. 每个 `[custom_block]` 的 `start` 是唯一必填项。
-3. 每个 `[custom_block]` 都是“当前进程生命周期内”的自定义窗口，不会按天自动重置；如需重新安排，可以修改配置文件或重启进程。
-4. 如果某个 `[custom_block]` 的 `duration_minutes` 为空，则一旦本次进程运行到它的 `start`，目标进程会持续断网直到本次进程生命周期结束，或配置文件被修改后重新判定。
-5. 如果填写了 `duration_minutes`，但 `repeat_count` 为空，则只执行 1 段该持续时间的断网窗口。
-6. 如果同时填写了 `duration_minutes` 和 `repeat_count`，则总断网时长为 `duration_minutes * repeat_count`，这些窗口按连续段叠加。
-7. 如果只填写了 `repeat_count` 而没有填写 `duration_minutes`，`repeat_count` 不生效，行为仍等同于“从 `start` 断网到本次进程生命周期结束”。
+1. `[schedule]`、`[volume]` 和 `[state]` 是普通 section，各键最后一次出现的值生效。
+2. 可以写入若干个 `[custom_block]` section；程序会按出现顺序读取，并把它们视为并集。
+3. 每个 `[custom_block]` 的 `start` 是唯一必填项。
+4. 每个 `[custom_block]` 都是“当前进程生命周期内”的自定义窗口，不会按天自动重置；如需重新安排，可以修改配置文件或重启进程。
+5. 如果某个 `[custom_block]` 的 `duration_minutes` 为空，则一旦本次进程运行到它的 `start`，目标进程会持续断网直到本次进程生命周期结束，或配置文件被修改后重新判定。
+6. 如果填写了 `duration_minutes`，但 `repeat_count` 为空，则只执行 1 段该持续时间的断网窗口。
+7. 如果同时填写了 `duration_minutes` 和 `repeat_count`，则每段断网都持续 `duration_minutes` 分钟，总段数为 `repeat_count`。
+8. 如果 `interval_minutes` 也填写了，则每一段断网结束后会先等待 `interval_minutes` 分钟，再开始下一段断网。
+9. 如果填写了 `duration_minutes` 和 `repeat_count`，但 `interval_minutes` 为空，则各段断网会连续拼接，行为与旧版本一致。
+10. 如果只填写了 `repeat_count` 或 `interval_minutes`，而没有填写 `duration_minutes`，这些附加参数都不生效，行为仍等同于“从 `start` 断网到本次进程生命周期结束”。
 
 程序会在心跳周期内重新读取该文件，因此你在程序运行中修改它，后续循环会自动使用新值。
 
@@ -182,7 +216,8 @@ repeat_count=1
 
 ### 自定义断网时间窗
 
-在 `ScheduledBlocks` 阶段，程序还会额外检查 `%LocalAppData%\Solock\hotspot_and_block.ini` 中全部 `[custom_block]` 配置。
+在 `ScheduledBlocks` 阶段，程序还会额外检查 `%LocalAppData%\Solock\config.cfg` 中全部 `[custom_block]` 配置。
+如果某个 `[custom_block]` 同时设置了 `duration_minutes`、`interval_minutes` 和 `repeat_count`，程序会按“断网一段 -> 等待一段 -> 再断网一段”的顺序逐段判断是否命中。
 
 自定义断网时间窗与内置时间窗是“并集”关系：
 
@@ -192,6 +227,7 @@ repeat_count=1
 在以下阶段中，目标进程会被持续断网，而不依赖内置窗口或自定义窗口：
 
 - `MiddayIdleShutdown`
+- `EveningIdleShutdown`
 - `EveningPostAction`
 
 ### 目标进程解析规则
@@ -221,15 +257,15 @@ WFP 规则依附于动态 session，程序会在以下时机清理：
 
 ### 白天阶段
 
-在普通阶段和午间阶段，程序执行“前置热点保障”：
+在普通阶段、午间阶段以及关闭晚间热点后的晚间空闲关机阶段，程序执行“前置热点保障”：
 
-- 如果本地 INI 的 `[state]` 里记录过原始 SSID，并且当前 SSID 与之不同，则先尝试恢复原始 SSID
+- 如果本地 `config.cfg` 的 `[state]` 里记录过原始 SSID，并且当前 SSID 与之不同，则先尝试恢复原始 SSID
 - 如果当前 SSID 已经等于记录值，则清理该状态项
 - 最终确保热点处于开启状态
 
 ### 晚间阶段
 
-晚间阶段始终使用随机运营商风格别名。随机别名逻辑会：
+仅当 `[schedule] enable_evening_hotspot=true` 时，晚间阶段才会使用随机运营商风格别名。随机别名逻辑会：
 
 1. 尽量保存“切换前的原始 SSID”。
 2. 以原始 SSID 为优先来源；如果拿不到，则退回当前 SSID；再不行才退回 `postActionSsid`。
@@ -257,10 +293,10 @@ WFP 规则依附于动态 session，程序会在以下时机清理：
 
 程序现在只使用一个本地文件：
 
-- `%LocalAppData%\Solock\hotspot_and_block.ini`
-  同时承载运行时状态和用户配置。其中 `[state] original_hotspot_ssid` 用于保存“晚间切换前的原始 SSID”，`[volume]` 用于覆盖目标音量，`[custom_block]` 用于定义一个或多个自定义断网时间窗。
+- `%LocalAppData%\Solock\config.cfg`
+  同时承载运行时状态和用户配置。其中 `[state] original_hotspot_ssid` 用于保存“晚间切换前的原始 SSID”，`[schedule]` 用于覆盖调度与晚间热点开关，`[volume]` 用于覆盖目标音量，`[custom_block]` 用于定义一个或多个自定义断网时间窗。
 
-如果本地还残留旧版 `%LocalAppData%\Solock\original_hotspot_ssid.txt`，程序会在读取到它时自动迁移到 `hotspot_and_block.ini`。
+如果本地还残留旧版 `%LocalAppData%\Solock\hotspot_and_block.ini` 或 `%LocalAppData%\Solock\original_hotspot_ssid.txt`，程序会在读取到它们时自动迁移到 `config.cfg`。
 
 ## 音量控制
 
@@ -268,9 +304,10 @@ WFP 规则依附于动态 session，程序会在以下时机清理：
 
 - `ScheduledBlocks`：`60%`
 - `MiddayIdleShutdown`：`35%`
+- `EveningIdleShutdown`：`35%`
 - `EveningPostAction`：`35%`
 
-如果 `%LocalAppData%\Solock\hotspot_and_block.ini` 中存在：
+如果 `%LocalAppData%\Solock\config.cfg` 中存在：
 
 ```ini
 [volume]
@@ -280,7 +317,7 @@ reduced_percent=35
 
 则会优先使用这里的值覆盖内置默认值。
 
-晚间阶段下，如果 Windows 当前处于锁屏且尚未回到桌面，程序会把系统切到静音；当 Windows 解锁并重新进入桌面后，程序会自动取消静音并恢复到 `reduced_percent`（未配置时回退到 `reducedVolumePercent`）。
+仅在 `EveningPostAction` 阶段下，如果 Windows 当前处于锁屏且尚未回到桌面，程序会把系统切到静音；当 Windows 解锁并重新进入桌面后，程序会自动取消静音并恢复到 `reduced_percent`（未配置时回退到 `reducedVolumePercent`）。
 
 实现方式：
 
@@ -299,7 +336,7 @@ reduced_percent=35
 
 ### 午间空闲关机
 
-在 `12:10` - `12:50` 之间：
+在午间空闲关机窗口内，默认是 `12:10` - `12:50`，也可以通过 `[schedule] midday_shutdown_start` 和 `[schedule] midday_shutdown_end` 覆盖：
 
 - 目标进程持续断网
 - 热点持续保持可用
@@ -311,12 +348,20 @@ reduced_percent=35
 2. 如果失败，回退到 `shutdown.exe /s /f /t 0 /d p:0:0`
 3. 如果仍失败，每秒继续重试直到成功
 
-### 晚间空闲锁屏与灭屏
+### 关闭晚间热点时的晚间空闲关机
 
-在 `17:40` 之后：
+当 `[schedule] enable_evening_hotspot=false` 时，在晚间空闲关机开始时间之后，默认是 `17:50` 之后：
 
 - 目标进程持续断网
-- 热点持续保持为配置文件指定名称或晚间随机别名
+- 热点持续保持可用
+- 一旦检测到连续空闲达到阈值，就立即关机
+
+### 开启晚间热点时的晚间空闲锁屏与灭屏
+
+当 `[schedule] enable_evening_hotspot=true` 时，在晚间热点开始时间之后，默认是 `17:40` 之后：
+
+- 目标进程持续断网
+- 热点持续保持为晚间随机别名
 - 如果连续空闲达到阈值，则调用 `LockWorkStation()` 锁屏
 - 锁屏约 1.2 秒后广播 `SC_MONITORPOWER` 关闭显示器
 - 在锁屏且显示器关闭、尚未重新回到桌面期间，系统音量会被切到静音
@@ -380,7 +425,7 @@ reduced_percent=35
 - `SolockControllerNetworkBlock.cpp`
   WFP 动态过滤器安装与清理、目标进程解析、断网时序匹配。
 - `SolockControllerConfig.cpp`
-  本地状态目录、INI 读写、外部音量覆盖、自定义断网窗口解析。
+  本地状态目录、`config.cfg` 读写、调度覆盖、外部音量覆盖、自定义断网窗口解析。
 - `SolockControllerSystem.cpp`
   锁屏、灭屏、关机、开机自启动计划任务注册。
 - `SolockControllerInternal.h/.cpp`
@@ -390,6 +435,6 @@ reduced_percent=35
 
 1. Release 模式下会真实执行计划任务注册、热点控制、WFP 断网、关机、锁屏和灭屏。
 2. 晚间热点逻辑只保留内置随机运营商风格别名，不再支持通过配置文件指定固定热点名。
-3. 自定义断网时间窗和音量覆盖都是可选的，并且都由 `%LocalAppData%\Solock\hotspot_and_block.ini` 控制。
-4. 内置默认策略仍然写在 `SolockController::Options` 中，但运行时原始 SSID 状态、外部音量覆盖和多个自定义断网窗口现在都放在同一个外部 INI 文件里。
+3. 调度覆盖、晚间热点开关、自定义断网时间窗和音量覆盖都是可选的，并且都由 `%LocalAppData%\Solock\config.cfg` 控制。
+4. 内置默认策略仍然写在 `SolockController::Options` 中，但运行时原始 SSID 状态、调度覆盖、外部音量覆盖和多个自定义断网窗口现在都放在同一个外部 INI 风格文件里。
 5. 如果程序未以足够权限运行，文档描述的部分系统级动作可能无法成功。

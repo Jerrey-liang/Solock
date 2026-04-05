@@ -188,7 +188,9 @@ namespace
 float SolockController::GetDesiredVolumePercentForPhase(const Phase phase) const
 {
     const ExternalOverrides overrides = LoadExternalOverrides();
-    if (phase == Phase::MiddayIdleShutdown || phase == Phase::EveningPostAction)
+    if (phase == Phase::MiddayIdleShutdown ||
+        phase == Phase::EveningIdleShutdown ||
+        phase == Phase::EveningPostAction)
     {
         const float configuredVolume = overrides.hasReducedVolumePercent
             ? overrides.reducedVolumePercent

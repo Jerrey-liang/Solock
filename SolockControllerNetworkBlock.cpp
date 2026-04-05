@@ -455,11 +455,21 @@ bool SolockController::IsCustomBlockActiveAt(
         const int repeatCount = block.hasCustomBlockRepeatCount
             ? std::max(1, block.customBlockRepeatCount)
             : 1;
-        const auto totalDuration = std::chrono::minutes(
-            static_cast<std::chrono::minutes::rep>(block.customBlockDurationMinutes) * repeatCount);
-        if (now < state.activationTime + totalDuration)
+        const auto segmentDuration = std::chrono::minutes(block.customBlockDurationMinutes);
+        const auto segmentInterval = std::chrono::minutes(
+            block.hasCustomBlockIntervalMinutes
+                ? std::max(0, block.customBlockIntervalMinutes)
+                : 0);
+        const auto cycleDuration = segmentDuration + segmentInterval;
+
+        for (int repeatIndex = 0; repeatIndex < repeatCount; ++repeatIndex)
         {
-            return true;
+            const auto segmentStart = state.activationTime + (cycleDuration * repeatIndex);
+            const auto segmentEnd = segmentStart + segmentDuration;
+            if (now >= segmentStart && now < segmentEnd)
+            {
+                return true;
+            }
         }
     }
 

@@ -37,6 +37,8 @@ public:
         int middayShutdownEndMinute = 50;
         int eveningPostActionStartHour = 17;
         int eveningPostActionStartMinute = 40;
+        int eveningIdleShutdownStartHour = 17;
+        int eveningIdleShutdownStartMinute = 50;
         int inactivityThresholdMinutes = 10;
         int heartbeatSeconds = 15;
         float normalVolumePercent = 60.0f;
@@ -70,6 +72,8 @@ private:
         int startMinutesOfDay = 0;
         bool hasCustomBlockDurationMinutes = false;
         int customBlockDurationMinutes = 0;
+        bool hasCustomBlockIntervalMinutes = false;
+        int customBlockIntervalMinutes = 0;
         bool hasCustomBlockRepeatCount = false;
         int customBlockRepeatCount = 0;
         std::wstring signature;
@@ -80,6 +84,7 @@ private:
         std::chrono::system_clock::time_point middayShutdownStartTime;
         std::chrono::system_clock::time_point middayShutdownEndTime;
         std::chrono::system_clock::time_point eveningPostActionStartTime;
+        std::chrono::system_clock::time_point eveningIdleShutdownStartTime;
     };
 
     struct InstalledBlockedAppFilter
@@ -99,6 +104,16 @@ private:
     {
         std::vector<CustomBlockWindow> customBlocks;
         std::wstring customBlockSignature;
+        bool hasMiddayShutdownStartMinutesOfDay = false;
+        int middayShutdownStartMinutesOfDay = 0;
+        bool hasMiddayShutdownEndMinutesOfDay = false;
+        int middayShutdownEndMinutesOfDay = 0;
+        bool hasEveningHotspotEnabled = false;
+        bool eveningHotspotEnabled = true;
+        bool hasEveningHotspotStartMinutesOfDay = false;
+        int eveningHotspotStartMinutesOfDay = 0;
+        bool hasEveningIdleShutdownStartMinutesOfDay = false;
+        int eveningIdleShutdownStartMinutesOfDay = 0;
         bool hasNormalVolumePercent = false;
         float normalVolumePercent = 0.0f;
         bool hasReducedVolumePercent = false;
@@ -115,6 +130,7 @@ private:
     {
         ScheduledBlocks,
         MiddayIdleShutdown,
+        EveningIdleShutdown,
         EveningPostAction,
     };
 
@@ -137,10 +153,14 @@ private:
         int hour,
         int minute,
         int second = 0);
-    ScheduleTimes GetScheduleTimesFor(const std::chrono::system_clock::time_point& now) const;
+    ScheduleTimes GetScheduleTimesFor(
+        const std::chrono::system_clock::time_point& now,
+        const ExternalOverrides& overrides) const;
     static Phase GetPhaseAt(
         const std::chrono::system_clock::time_point& now,
-        const ScheduleTimes& scheduleTimes);
+        const ScheduleTimes& scheduleTimes,
+        const ExternalOverrides& overrides);
+    static bool IsEveningHotspotEnabled(const ExternalOverrides& overrides);
 
     int RunWithSchedule();
     bool WaitForSystemAndNetworkStability();
@@ -192,7 +212,7 @@ private:
     // Local state and external overrides.
     static std::wstring GetStateDirectoryPath();
     static std::wstring GetLegacyOriginalSsidStateFilePath();
-    static std::wstring GetHotspotAndBlockConfigFilePath();
+    static std::wstring GetConfigFilePath();
     static bool EnsureStateDirectoryExists();
     static bool ClearOriginalSsid();
     static bool SaveOriginalSsid(const std::wstring& ssid);
