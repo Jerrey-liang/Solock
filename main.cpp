@@ -83,6 +83,14 @@ int main()
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
         SolockController::Options options;
+
+#ifdef _DEBUG
+        options.debugSkipHotspotActions = false;
+        options.debugSkipDestructiveActions = true;
+        options.debugForceIdleState = true;
+        options.debugStepDelayMilliseconds = 150;
+#endif
+
         SolockController app(options);
 
 #ifdef _DEBUG

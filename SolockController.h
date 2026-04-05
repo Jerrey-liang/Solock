@@ -185,6 +185,7 @@ private:
         const std::vector<RunningBlockedProcess>& runningProcesses) const;
 
     // Session and power actions.
+    bool ShouldSkipDestructiveActions() const;
     bool LockCurrentSession();
     bool TurnOffDisplay();
     bool ShutdownMachineNow();

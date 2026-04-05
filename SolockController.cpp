@@ -78,22 +78,62 @@ int SolockController::RunAllFeaturesAcceleratedDebug()
         }
     };
 
-    DebugLog(L"[ACCEL] hotspot-only debug started.");
+    DebugLog(L"[ACCEL] full feature debug started.");
+
+    recordStep(L"audio / InitializeAudioVolumeMonitoring", InitializeAudioVolumeMonitoring());
+    sleepBetweenSteps();
+
+    if (m_options.autoRegisterScheduledTask)
+    {
+        recordStep(L"task / EnsureStartupTaskRegistered", EnsureStartupTaskRegistered(m_options.scheduledTaskName));
+        sleepBetweenSteps();
+    }
+
+    recordStep(L"system / AssertKeepSystemAwake", AssertKeepSystemAwake());
+    sleepBetweenSteps();
+
+    recordStep(L"audio / EnsureAudioVolumeMatchesPhase(ScheduledBlocks)", EnsureAudioVolumeMatchesPhase(Phase::ScheduledBlocks));
+    sleepBetweenSteps();
 
     ResetEveningHotspotAlias();
     recordStep(L"hotspot / EnsurePreActionHotspot(initial)", EnsurePreActionHotspot());
     sleepBetweenSteps();
 
+    recordStep(L"network / EnsureTargetAppsNetworkingEnabled(initial)", EnsureTargetAppsNetworkingEnabled());
+    sleepBetweenSteps();
+
+    recordStep(L"network / EnsureTargetAppsNetworkingBlocked", EnsureTargetAppsNetworkingBlocked());
+    sleepBetweenSteps();
+
+    recordStep(L"audio / EnsureAudioVolumeMatchesPhase(MiddayIdleShutdown)", EnsureAudioVolumeMatchesPhase(Phase::MiddayIdleShutdown));
+    sleepBetweenSteps();
+
+    if (m_options.debugForceIdleState)
+    {
+        recordStep(L"power / ShutdownMachineNow", ShutdownMachineNow());
+        sleepBetweenSteps();
+    }
+
     ResetEveningHotspotAlias();
-    recordStep(L"hotspot / EnsureEveningHotspotState", EnsureEveningHotspotState());
+    recordStep(L"network+hotspot / EnsureEveningPostActionState", EnsureEveningPostActionState());
+    sleepBetweenSteps();
+
+    recordStep(L"audio / EnsureAudioVolumeMatchesPhase(EveningPostAction)", EnsureAudioVolumeMatchesPhase(Phase::EveningPostAction));
+    sleepBetweenSteps();
+
+    recordStep(L"session / ApplyEveningIdleLockIfNeeded", ApplyEveningIdleLockIfNeeded());
     sleepBetweenSteps();
 
     recordStep(L"hotspot / EnsurePreActionHotspot(restore)", EnsurePreActionHotspot());
+    sleepBetweenSteps();
+
+    recordStep(L"network / EnsureTargetAppsNetworkingEnabled(cleanup)", EnsureTargetAppsNetworkingEnabled());
     ResetEveningHotspotAlias();
+    ClearKeepSystemAwake();
 
     int failureCount = 0;
     std::wostringstream summary;
-    summary << L"[ACCEL] hotspot-only debug completed with ";
+    summary << L"[ACCEL] full feature debug completed with ";
     for (const auto& step : stepResults)
     {
         if (!step.ok)
@@ -349,6 +389,13 @@ bool SolockController::IsNetworkUsableNow() const
 
 bool SolockController::IsInputIdleForAtLeast(const std::chrono::milliseconds idleThreshold) const
 {
+#ifdef _DEBUG
+    if (m_options.debugForceIdleState)
+    {
+        return true;
+    }
+#endif
+
     LASTINPUTINFO lastInputInfo = {};
     lastInputInfo.cbSize = sizeof(lastInputInfo);
     if (!::GetLastInputInfo(&lastInputInfo))

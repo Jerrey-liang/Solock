@@ -86,13 +86,34 @@ namespace
     }
 }
 
+bool SolockController::ShouldSkipDestructiveActions() const
+{
+#ifdef _DEBUG
+    return m_options.debugSkipDestructiveActions;
+#else
+    return false;
+#endif
+}
+
 bool SolockController::LockCurrentSession()
 {
+    if (ShouldSkipDestructiveActions())
+    {
+        DebugLog(L"[SYSTEM] debug skip enabled; LockWorkStation bypassed.");
+        return true;
+    }
+
     return ::LockWorkStation() != FALSE;
 }
 
 bool SolockController::TurnOffDisplay()
 {
+    if (ShouldSkipDestructiveActions())
+    {
+        DebugLog(L"[SYSTEM] debug skip enabled; display power-off broadcast bypassed.");
+        return true;
+    }
+
     ::SendMessageW(
         HWND_BROADCAST,
         WM_SYSCOMMAND,
@@ -103,6 +124,12 @@ bool SolockController::TurnOffDisplay()
 
 bool SolockController::ShutdownMachineNow()
 {
+    if (ShouldSkipDestructiveActions())
+    {
+        DebugLog(L"[SYSTEM] debug skip enabled; shutdown path treated as successful.");
+        return true;
+    }
+
     for (;;)
     {
         if (EnableShutdownPrivilege() &&
