@@ -162,10 +162,17 @@ exit /b 0</Command>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="..\SolockController.h" />
+    <ClInclude Include="..\SolockControllerInternal.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\main.cpp" />
     <ClCompile Include="..\SolockController.cpp" />
+    <ClCompile Include="..\SolockControllerAudio.cpp" />
+    <ClCompile Include="..\SolockControllerConfig.cpp" />
+    <ClCompile Include="..\SolockControllerHotspot.cpp" />
+    <ClCompile Include="..\SolockControllerInternal.cpp" />
+    <ClCompile Include="..\SolockControllerNetworkBlock.cpp" />
+    <ClCompile Include="..\SolockControllerSystem.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\README.md" />

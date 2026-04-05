@@ -18,12 +18,33 @@
     <ClInclude Include="..\SolockController.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="..\SolockControllerInternal.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\main.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="..\SolockController.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="..\SolockControllerAudio.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="..\SolockControllerConfig.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="..\SolockControllerHotspot.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="..\SolockControllerInternal.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="..\SolockControllerNetworkBlock.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="..\SolockControllerSystem.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>

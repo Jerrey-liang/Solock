@@ -365,6 +365,29 @@ reduced_percent=35
 - `Debug|x64` 为控制台子系统，并显式要求 `RequireAdministrator`
 - `Release|x64` 为 Windows 子系统，入口符号为 `mainCRTStartup`
 
+### 代码结构
+
+- `main.cpp`
+  进程入口、WinRT 初始化、顶层异常兜底。
+- `SolockController.h`
+  控制器对外接口、配置项定义、私有状态与成员函数声明。
+- `SolockController.cpp`
+  控制器生命周期、调度阶段判定、主循环、启动期网络稳定等待。
+- `SolockControllerAudio.cpp`
+  默认音频设备监听、音量同步、晚间静音与恢复。
+- `SolockControllerHotspot.cpp`
+  热点开启、SSID 切换、晚间随机别名生成。
+- `SolockControllerNetworkBlock.cpp`
+  WFP 动态过滤器安装与清理、目标进程解析、断网时序匹配。
+- `SolockControllerConfig.cpp`
+  本地状态目录、INI 读写、外部音量覆盖、自定义断网窗口解析。
+- `SolockControllerSystem.cpp`
+  锁屏、灭屏、关机、开机自启动计划任务注册。
+- `SolockControllerInternal.h/.cpp`
+  仅供内部复用的共享工具、大小写比较、调试输出、COM 释放辅助。
+
+这样的拆分不改变程序对外行为，目的是缩小单文件职责范围，降低后续维护与定位问题时的上下文成本。
+
 ## 需要注意的实际行为
 
 1. Release 模式下会真实执行计划任务注册、热点控制、WFP 断网、关机、锁屏和灭屏。

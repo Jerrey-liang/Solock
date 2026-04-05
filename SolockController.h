@@ -131,6 +131,7 @@ private:
     IMMDeviceEnumerator* m_audioDeviceEnumerator;
     IMMNotificationClient* m_audioNotificationClient;
 
+    // Core schedule flow.
     static std::chrono::system_clock::time_point LocalAtOnSameDay(
         const std::chrono::system_clock::time_point& referenceNow,
         int hour,
@@ -142,11 +143,11 @@ private:
         const ScheduleTimes& scheduleTimes);
 
     int RunWithSchedule();
-
     bool WaitForSystemAndNetworkStability();
     bool IsNetworkUsableNow() const;
     bool IsInputIdleForAtLeast(std::chrono::milliseconds idleThreshold) const;
 
+    // Audio state.
     bool AssertKeepSystemAwake();
     void ClearKeepSystemAwake();
     float GetDesiredVolumePercentForPhase(Phase phase) const;
@@ -157,12 +158,17 @@ private:
     bool EnsureAudioVolumeMatchesPhase(Phase phase) const;
     void WaitForHeartbeatOrAudioEvent(int heartbeatSeconds) const;
 
+    // Hotspot management.
     bool EnsurePreActionHotspot();
     bool EnsureHotspotOnWithCurrentConfig();
     bool EnsureHotspotOnWithSsid(const std::wstring& desiredSsid);
     void ResetEveningHotspotAlias();
     std::wstring GetEveningHotspotAlias(const std::wstring& sourceSsid);
     static std::wstring BuildRandomizedHotspotAlias(const std::wstring& sourceSsid);
+    bool EnsureEveningHotspotState();
+    bool ShouldSkipHotspotActions() const;
+
+    // App networking block.
     bool EnsureTargetAppsNetworkingBlocked();
     bool EnsureTargetAppsNetworkingEnabled();
     std::vector<RunningBlockedProcess> ResolveRunningBlockedProcesses() const;
@@ -172,18 +178,18 @@ private:
         const std::chrono::system_clock::time_point& now,
         const ExternalOverrides& overrides);
     void CloseWfpEngine();
-    bool EnsureEveningHotspotState();
     bool EnsureEveningPostActionState();
     bool ApplyEveningIdleLockIfNeeded();
-    bool ShouldSkipHotspotActions() const;
     void DebugLogRunningBlockedProcesses(
         const wchar_t* stage,
         const std::vector<RunningBlockedProcess>& runningProcesses) const;
 
+    // Session and power actions.
     bool LockCurrentSession();
     bool TurnOffDisplay();
     bool ShutdownMachineNow();
 
+    // Local state and external overrides.
     static std::wstring GetStateDirectoryPath();
     static std::wstring GetLegacyOriginalSsidStateFilePath();
     static std::wstring GetHotspotAndBlockConfigFilePath();
@@ -193,6 +199,7 @@ private:
     static bool TryLoadOriginalSsid(std::wstring& ssid);
     static ExternalOverrides LoadExternalOverrides();
 
+    // Startup task registration.
     static std::wstring GetCurrentExePath();
     static std::wstring GetCurrentExeDirectory();
     static std::wstring GetCurrentUserTaskUserId();
