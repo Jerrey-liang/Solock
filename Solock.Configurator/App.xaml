@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Application
+    x:Class="Solock_Configurator.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:Solock_Configurator">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+                <!-- Other merged dictionaries here -->
+            </ResourceDictionary.MergedDictionaries>
+            <SolidColorBrush x:Key="AppAccentBrush" Color="#FF4C8BF5"/>
+            <SolidColorBrush x:Key="AppAccentForegroundBrush" Color="#FFFFFFFF"/>
+            <SolidColorBrush x:Key="AppWindowBackgroundBrush" Color="#EEF5F7FB"/>
+            <SolidColorBrush x:Key="AppCardBackgroundBrush" Color="#DFFFFFFF"/>
+            <SolidColorBrush x:Key="AppCardBorderBrush" Color="#5C90A0B8"/>
+            <SolidColorBrush x:Key="AppMutedTextBrush" Color="#FF5B6472"/>
+            <SolidColorBrush x:Key="AppErrorBrush" Color="#FFB3261E"/>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

@@ -24,6 +24,7 @@
     <ProjectGuid>{4c9691b8-0ad9-47f5-91dd-cbb57f75bf6d}</ProjectGuid>
     <RootNamespace>Solock</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>Solock.Agent</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -70,6 +71,11 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <TargetName>Solock.Agent</TargetName>
+    <OutDir>$(ProjectDir)..\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -109,35 +115,6 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
     </Link>
-    <PostBuildEvent>
-      <Command>setlocal EnableDelayedExpansion
-set "DEPLOY=D:\C++\VMShare\Deploy\$(ProjectName)\$(Platform)\$(Configuration)"
-
-if not exist "!DEPLOY!" (
-mkdir "!DEPLOY!" 2&gt;nul
-)
-
-if exist "!DEPLOY!" (
-copy /Y "$(TargetPath)" "!DEPLOY!\" &gt;nul
-if errorlevel 1 echo [Solock] Warning: failed to copy $(TargetFileName) to "!DEPLOY!".
-
-if exist "$(TargetDir)$(TargetName).pdb" (
-copy /Y "$(TargetDir)$(TargetName).pdb" "!DEPLOY!\" &gt;nul
-if errorlevel 1 echo [Solock] Warning: failed to copy $(TargetName).pdb to "!DEPLOY!".
-)
-
-for %%F in ("$(TargetDir)*.dll") do (
-if exist "%%~fF" (
-copy /Y "%%~fF" "!DEPLOY!\" &gt;nul
-if errorlevel 1 echo [Solock] Warning: failed to copy %%~nxF to "!DEPLOY!".
-)
-)
-) else (
-echo [Solock] Warning: deploy directory "!DEPLOY!" is unavailable. Skipping VMShare copy.
-)
-
-exit /b 0</Command>
-    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -155,10 +132,6 @@ exit /b 0</Command>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
     </Link>
-    <PostBuildEvent>
-      <Command>
-      </Command>
-    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="..\SolockController.h" />

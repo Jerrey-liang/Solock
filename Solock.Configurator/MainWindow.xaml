@@ -1,0 +1,391 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="Solock_Configurator.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:Solock_Configurator"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="Solock Configurator">
+
+    <Grid x:Name="WindowRootGrid"
+          Loaded="RootContent_Loaded"
+          Padding="20"
+          RowSpacing="16"
+          Background="{ThemeResource AppWindowBackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Spacing="6">
+            <TextBlock x:Name="AppTitleTextBlock" Text="Solock Configurator" FontSize="28" FontWeight="SemiBold"/>
+            <TextBlock x:Name="AppSubtitleTextBlock"
+                       Text="Edit Solock config in separate pages, validate before save, and manage Solock.Agent.exe from one window."
+                       TextWrapping="WrapWholeWords"/>
+        </StackPanel>
+
+        <Border x:Name="ValidationSummaryBorder"
+                Grid.Row="1"
+                Background="{ThemeResource AppCardBackgroundBrush}"
+                BorderBrush="{ThemeResource AppCardBorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="12">
+            <StackPanel Spacing="8">
+                <TextBlock x:Name="ValidationSummaryLabelTextBlock" Text="Validation summary" FontWeight="SemiBold"/>
+                <TextBlock x:Name="ValidationSummaryTextBlock" Text="All fields are valid." TextWrapping="WrapWholeWords"/>
+            </StackPanel>
+        </Border>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="12">
+            <Button x:Name="LoadButton"
+                    Content="Reload config"
+                    Background="{ThemeResource AppAccentBrush}"
+                    Foreground="{ThemeResource AppAccentForegroundBrush}"
+                    Click="LoadButton_Click"/>
+            <Button x:Name="SaveButton"
+                    Content="Save config"
+                    Background="{ThemeResource AppAccentBrush}"
+                    Foreground="{ThemeResource AppAccentForegroundBrush}"
+                    Click="SaveButton_Click"/>
+        </StackPanel>
+
+        <TabView x:Name="MainTabView" Grid.Row="3" TabWidthMode="Equal">
+            <TabViewItem x:Name="OverviewTabViewItem" Header="Overview">
+                <ScrollViewer>
+                    <StackPanel Padding="12" Spacing="12">
+                        <TextBlock x:Name="OverviewHeaderTextBlock" Text="Overview" FontSize="20" FontWeight="SemiBold"/>
+                        <TextBlock x:Name="OverviewDescriptionTextBlock"
+                                   Text="Use the other pages to edit schedule, volume, custom blocks, and agent actions. Saving still writes config.cfg in one atomic step."
+                                   TextWrapping="WrapWholeWords"/>
+                        <TextBlock x:Name="FormStateTextBlock" Text="Validation status will appear here." TextWrapping="WrapWholeWords"/>
+                        <TextBlock x:Name="AgentStateSummaryTextBlock" Text="Agent status will appear here." TextWrapping="WrapWholeWords"/>
+                        <TextBox x:Name="ConfigPathTextBox" Header="Config file" IsReadOnly="True"/>
+                        <TextBox x:Name="OriginalSsidTextBox" Header="Original hotspot SSID (read-only)" IsReadOnly="True"/>
+                        <TextBlock x:Name="ActivityLabelTextBlock" Text="Activity" FontWeight="SemiBold"/>
+                        <TextBlock x:Name="StatusTextBlock" TextWrapping="WrapWholeWords"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabViewItem>
+
+            <TabViewItem x:Name="AppearanceTabViewItem" Header="Appearance">
+                <ScrollViewer>
+                    <StackPanel Padding="12" Spacing="16">
+                        <Border x:Name="AppearanceCardBorder"
+                                Background="{ThemeResource AppCardBackgroundBrush}"
+                                BorderBrush="{ThemeResource AppCardBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="12">
+                            <StackPanel Spacing="12">
+                                <TextBlock x:Name="AppearanceHeaderTextBlock" Text="Appearance" FontSize="20" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="AppearanceDescriptionTextBlock"
+                                           Text="Choose light or dark mode, let the app follow the system, and derive the accent color from the current wallpaper."
+                                           TextWrapping="WrapWholeWords"/>
+
+                                <TextBlock x:Name="ThemeModeLabelTextBlock" Text="Theme mode" FontWeight="SemiBold"/>
+                                <ComboBox x:Name="ThemeModeComboBox" SelectionChanged="AppearanceSelectionChanged">
+                                    <ComboBoxItem x:Name="ThemeModeSystemComboBoxItem" Content="Follow system"/>
+                                    <ComboBoxItem x:Name="ThemeModeLightComboBoxItem" Content="Light"/>
+                                    <ComboBoxItem x:Name="ThemeModeDarkComboBoxItem" Content="Dark"/>
+                                </ComboBox>
+
+                                <TextBlock x:Name="LanguageModeLabelTextBlock" Text="Language" FontWeight="SemiBold"/>
+                                <ComboBox x:Name="LanguageModeComboBox" SelectionChanged="AppearanceSelectionChanged">
+                                    <ComboBoxItem x:Name="LanguageModeSystemComboBoxItem" Content="Follow system"/>
+                                    <ComboBoxItem x:Name="LanguageModeEnglishComboBoxItem" Content="English"/>
+                                    <ComboBoxItem x:Name="LanguageModeChineseComboBoxItem" Content="Chinese (Simplified)"/>
+                                </ComboBox>
+
+                                <TextBlock x:Name="AeroEffectLabelTextBlock" Text="Aero background" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="AeroEffectHintTextBlock"
+                                           Text="The window uses a Windows acrylic backdrop when available and falls back gracefully when it is not."
+                                           Foreground="{ThemeResource AppMutedTextBrush}"
+                                           TextWrapping="WrapWholeWords"/>
+
+                                <TextBlock x:Name="WallpaperThemeLabelTextBlock" Text="Wallpaper theme color" FontWeight="SemiBold"/>
+                                <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                    <Border x:Name="AccentPreviewBorder"
+                                            Width="44"
+                                            Height="44"
+                                            CornerRadius="12"
+                                            BorderBrush="{ThemeResource AppCardBorderBrush}"
+                                            BorderThickness="1"
+                                            Background="{ThemeResource AppAccentBrush}"/>
+                                    <TextBlock x:Name="WallpaperThemeSourceTextBlock"
+                                               VerticalAlignment="Center"
+                                               TextWrapping="WrapWholeWords"/>
+                                </StackPanel>
+                                <TextBlock x:Name="WallpaperThemeHintTextBlock"
+                                           Text="Refresh the accent after changing your wallpaper."
+                                           Foreground="{ThemeResource AppMutedTextBrush}"
+                                           TextWrapping="WrapWholeWords"/>
+                                <Button x:Name="RefreshWallpaperThemeButton"
+                                        Content="Refresh wallpaper theme"
+                                        HorizontalAlignment="Left"
+                                        Background="{ThemeResource AppAccentBrush}"
+                                        Foreground="{ThemeResource AppAccentForegroundBrush}"
+                                        Click="RefreshWallpaperThemeButton_Click"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabViewItem>
+
+            <TabViewItem x:Name="ScheduleTabViewItem" Header="Schedule">
+                <ScrollViewer>
+                    <StackPanel Padding="12" Spacing="16">
+                        <Border x:Name="EveningHotspotCardBorder"
+                                Background="{ThemeResource AppCardBackgroundBrush}"
+                                BorderBrush="{ThemeResource AppCardBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="12">
+                            <StackPanel Spacing="12">
+                                <TextBlock x:Name="EveningHotspotHeaderTextBlock" Text="Evening Hotspot" FontSize="20" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="EveningHotspotDescriptionTextBlock"
+                                           Text="Leave a field empty to keep the agent default."
+                                           TextWrapping="WrapWholeWords"/>
+
+                                <TextBlock x:Name="EveningHotspotModeLabelTextBlock" Text="Evening hotspot mode" FontWeight="SemiBold"/>
+                                <ComboBox x:Name="EnableEveningHotspotComboBox"
+                                          SelectedIndex="0"
+                                          SelectionChanged="ComboSelectionChanged">
+                                    <ComboBoxItem x:Name="EveningHotspotModeDefaultComboBoxItem" Content="Use default"/>
+                                    <ComboBoxItem x:Name="EveningHotspotModeEnabledComboBoxItem" Content="Enabled"/>
+                                    <ComboBoxItem x:Name="EveningHotspotModeDisabledComboBoxItem" Content="Disabled"/>
+                                </ComboBox>
+
+                                <CheckBox x:Name="EveningHotspotStartDefaultCheckBox"
+                                          Content="Use agent default"
+                                          IsChecked="True"
+                                          Checked="CheckBoxChanged"
+                                          Unchecked="CheckBoxChanged"/>
+                                <TimePicker x:Name="EveningHotspotStartTimePicker"
+                                            Header="Evening hotspot start"
+                                            ClockIdentifier="24HourClock"
+                                            MinuteIncrement="1"
+                                            IsEnabled="False"
+                                            TimeChanged="ScheduleTimeChanged"/>
+                                <TextBlock x:Name="EveningHotspotStartErrorTextBlock"
+                                           Visibility="Collapsed"
+                                           Foreground="{ThemeResource AppErrorBrush}"
+                                           TextWrapping="WrapWholeWords"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border x:Name="MiddayShutdownCardBorder"
+                                Background="{ThemeResource AppCardBackgroundBrush}"
+                                BorderBrush="{ThemeResource AppCardBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="12">
+                            <StackPanel Spacing="12">
+                                <TextBlock x:Name="MiddayShutdownHeaderTextBlock" Text="Midday Shutdown" FontSize="20" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="MiddayShutdownDescriptionTextBlock"
+                                           Text="Configure the temporary shutdown window around midday."
+                                           TextWrapping="WrapWholeWords"/>
+
+                                <CheckBox x:Name="MiddayShutdownStartDefaultCheckBox"
+                                          Content="Use agent default"
+                                          IsChecked="True"
+                                          Checked="CheckBoxChanged"
+                                          Unchecked="CheckBoxChanged"/>
+                                <TimePicker x:Name="MiddayShutdownStartTimePicker"
+                                            Header="Midday shutdown start"
+                                            ClockIdentifier="24HourClock"
+                                            MinuteIncrement="1"
+                                            IsEnabled="False"
+                                            TimeChanged="ScheduleTimeChanged"/>
+                                <TextBlock x:Name="MiddayShutdownStartErrorTextBlock"
+                                           Visibility="Collapsed"
+                                           Foreground="{ThemeResource AppErrorBrush}"
+                                           TextWrapping="WrapWholeWords"/>
+
+                                <CheckBox x:Name="MiddayShutdownEndDefaultCheckBox"
+                                          Content="Use agent default"
+                                          IsChecked="True"
+                                          Checked="CheckBoxChanged"
+                                          Unchecked="CheckBoxChanged"/>
+                                <TimePicker x:Name="MiddayShutdownEndTimePicker"
+                                            Header="Midday shutdown end"
+                                            ClockIdentifier="24HourClock"
+                                            MinuteIncrement="1"
+                                            IsEnabled="False"
+                                            TimeChanged="ScheduleTimeChanged"/>
+                                <TextBlock x:Name="MiddayShutdownEndErrorTextBlock"
+                                           Visibility="Collapsed"
+                                           Foreground="{ThemeResource AppErrorBrush}"
+                                           TextWrapping="WrapWholeWords"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border x:Name="EveningShutdownCardBorder"
+                                Background="{ThemeResource AppCardBackgroundBrush}"
+                                BorderBrush="{ThemeResource AppCardBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="12">
+                            <StackPanel Spacing="12">
+                                <TextBlock x:Name="EveningShutdownHeaderTextBlock" Text="Evening Shutdown" FontSize="20" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="EveningShutdownDescriptionTextBlock"
+                                           Text="Use this page section for the evening shutdown start time."
+                                           TextWrapping="WrapWholeWords"/>
+
+                                <CheckBox x:Name="EveningShutdownStartDefaultCheckBox"
+                                          Content="Use agent default"
+                                          IsChecked="True"
+                                          Checked="CheckBoxChanged"
+                                          Unchecked="CheckBoxChanged"/>
+                                <TimePicker x:Name="EveningShutdownStartTimePicker"
+                                            Header="Evening shutdown start"
+                                            ClockIdentifier="24HourClock"
+                                            MinuteIncrement="1"
+                                            IsEnabled="False"
+                                            TimeChanged="ScheduleTimeChanged"/>
+                                <TextBlock x:Name="EveningShutdownStartErrorTextBlock"
+                                           Visibility="Collapsed"
+                                           Foreground="{ThemeResource AppErrorBrush}"
+                                           TextWrapping="WrapWholeWords"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabViewItem>
+
+            <TabViewItem x:Name="VolumeTabViewItem" Header="Volume">
+                <ScrollViewer>
+                    <StackPanel Padding="12" Spacing="16">
+                        <Border x:Name="VolumeCardBorder"
+                                Background="{ThemeResource AppCardBackgroundBrush}"
+                                BorderBrush="{ThemeResource AppCardBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="12">
+                            <StackPanel Spacing="12">
+                                <TextBlock x:Name="VolumeHeaderTextBlock" Text="Volume Levels" FontSize="20" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="VolumeDescriptionTextBlock"
+                                           Text="Tune the normal and reduced volume targets independently. Turn off the default option to set an explicit percentage with the slider."
+                                           TextWrapping="WrapWholeWords"/>
+
+                                <TextBlock x:Name="NormalVolumeLabelTextBlock" Text="Normal volume percent" FontWeight="SemiBold"/>
+                                <CheckBox x:Name="NormalPercentDefaultCheckBox"
+                                          Content="Use agent default"
+                                          IsChecked="True"
+                                          Checked="CheckBoxChanged"
+                                          Unchecked="CheckBoxChanged"/>
+                                <Slider x:Name="NormalPercentSlider"
+                                        Minimum="0"
+                                        Maximum="100"
+                                        StepFrequency="1"
+                                        TickFrequency="5"
+                                        IsEnabled="False"
+                                        ValueChanged="VolumeSliderChanged"/>
+                                <TextBlock x:Name="NormalPercentValueTextBlock"
+                                           Text="Using agent default."
+                                           Foreground="{ThemeResource AppMutedTextBrush}"
+                                           TextWrapping="WrapWholeWords"/>
+                                <TextBlock x:Name="NormalPercentErrorTextBlock"
+                                           Visibility="Collapsed"
+                                           Foreground="{ThemeResource AppErrorBrush}"
+                                           TextWrapping="WrapWholeWords"/>
+
+                                <TextBlock x:Name="ReducedVolumeLabelTextBlock" Text="Reduced volume percent" FontWeight="SemiBold"/>
+                                <CheckBox x:Name="ReducedPercentDefaultCheckBox"
+                                          Content="Use agent default"
+                                          IsChecked="True"
+                                          Checked="CheckBoxChanged"
+                                          Unchecked="CheckBoxChanged"/>
+                                <Slider x:Name="ReducedPercentSlider"
+                                        Minimum="0"
+                                        Maximum="100"
+                                        StepFrequency="1"
+                                        TickFrequency="5"
+                                        IsEnabled="False"
+                                        ValueChanged="VolumeSliderChanged"/>
+                                <TextBlock x:Name="ReducedPercentValueTextBlock"
+                                           Text="Using agent default."
+                                           Foreground="{ThemeResource AppMutedTextBrush}"
+                                           TextWrapping="WrapWholeWords"/>
+                                <TextBlock x:Name="ReducedPercentErrorTextBlock"
+                                           Visibility="Collapsed"
+                                           Foreground="{ThemeResource AppErrorBrush}"
+                                           TextWrapping="WrapWholeWords"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabViewItem>
+
+            <TabViewItem x:Name="CustomBlocksTabViewItem" Header="Custom Blocks">
+                <ScrollViewer>
+                    <StackPanel Padding="12" Spacing="16">
+                        <Border x:Name="CustomBlocksCardBorder"
+                                Background="{ThemeResource AppCardBackgroundBrush}"
+                                BorderBrush="{ThemeResource AppCardBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="12">
+                            <StackPanel Spacing="12">
+                                <TextBlock x:Name="CustomBlocksHeaderTextBlock" Text="Custom Blocks" FontSize="20" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="CustomBlocksDescriptionTextBlock"
+                                           Text="Add each block as a separate row. Use the time picker for the start time. Duration, interval, and repeat count remain optional positive integers."
+                                           TextWrapping="WrapWholeWords"/>
+
+                                <Button x:Name="AddCustomBlockButton"
+                                        Content="Add custom block"
+                                        HorizontalAlignment="Left"
+                                        Background="{ThemeResource AppAccentBrush}"
+                                        Foreground="{ThemeResource AppAccentForegroundBrush}"
+                                        Click="AddCustomBlockButton_Click"/>
+
+                                <TextBlock x:Name="CustomBlocksEmptyTextBlock"
+                                           Text="No custom blocks configured."
+                                           Foreground="{ThemeResource AppMutedTextBrush}"
+                                           TextWrapping="WrapWholeWords"/>
+
+                                <StackPanel x:Name="CustomBlocksPanel" Spacing="12"/>
+                                <TextBlock x:Name="CustomBlocksErrorTextBlock"
+                                           Visibility="Collapsed"
+                                           Foreground="{ThemeResource AppErrorBrush}"
+                                           TextWrapping="WrapWholeWords"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabViewItem>
+
+            <TabViewItem x:Name="AgentTabViewItem" Header="Agent">
+                <ScrollViewer>
+                    <StackPanel Padding="12" Spacing="16">
+                        <Border x:Name="AgentCardBorder"
+                                Background="{ThemeResource AppCardBackgroundBrush}"
+                                BorderBrush="{ThemeResource AppCardBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="12">
+                            <StackPanel Spacing="8">
+                                <TextBlock x:Name="AgentHeaderTextBlock" Text="Agent" FontSize="20" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="AgentStatusTextBlock" Text="Agent status will appear here." TextWrapping="WrapWholeWords"/>
+                                <TextBlock x:Name="AgentHintTextBlock" TextWrapping="WrapWholeWords"/>
+
+                                <StackPanel Orientation="Horizontal" Spacing="12">
+                                    <Button x:Name="RefreshAgentStatusButton" Content="Refresh agent status" Click="RefreshAgentStatusButton_Click"/>
+                                    <Button x:Name="LaunchAgentButton" Content="Start Solock.Agent" Click="LaunchAgentButton_Click"/>
+                                    <Button x:Name="KillAgentButton" Content="Kill Solock.Agent" Click="KillAgentButton_Click"/>
+                                </StackPanel>
+
+                                <TextBox x:Name="DetectedAgentPathTextBox" Header="Discovered Solock.Agent.exe" IsReadOnly="True"/>
+                                <TextBox x:Name="RunningAgentPathTextBox" Header="Running agent process" IsReadOnly="True"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabViewItem>
+        </TabView>
+    </Grid>
+</Window>
